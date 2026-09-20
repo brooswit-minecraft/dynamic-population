@@ -46,15 +46,16 @@ before reaching ready, the mod's startup marker never appears in the log (a
 mod-load crash — verified by temporarily throwing from the mod constructor
 and re-running the script, which raises `RuntimeError: Server exited before
 reaching ready (mod_loaded_seen=False)` with exit code 1), or the server
-doesn't shut down cleanly within the timeout. CI runs the same script in the
-release workflow (see below).
+doesn't shut down cleanly within the timeout. CI runs the same script on
+every PR and push to `main` (see below); the release workflow runs it again
+against the release-versioned jar before publishing.
 
 ## CI
 
 `.github/workflows/ci.yml` builds the mod on every pull request and every
 push to `main` (JDK 21 via `actions/setup-java`, Gradle dependency caching,
-least-privilege `contents: read`), and uploads the built jar as a workflow
-artifact.
+least-privilege `contents: read`), runs the server-boot smoke test against
+the built jar, and uploads the jar as a workflow artifact.
 
 ## Release
 
