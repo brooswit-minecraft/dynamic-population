@@ -1,0 +1,75 @@
+name: Release
+
+# Path-gated: only a push to main that touches version.txt — the single
+# source of truth for the shipped version (see build.gradle) — publishes.
+# Every other push to main (docs, CI tweaks, workflow edits, a source change
+# that hasn't been version-bumped yet) runs CI but does not cut a release.
+# This mirrors dynamic-atmosphere's release.yml, which gates on the same
+# file for the same reason: a version bump is the deliberate "ship this"
+# signal, not "any code changed".
+on:
+  push:
+    branches: [main]
+    paths: [version.txt]
+  workflow_dispatch:
+
+# Least privilege: only the `release` job needs contents:write, to create
+# the GitHub Release and upload its asset, via the automatic GITHUB_TOKEN.
+# This repo has no Actions secrets or variables (verified against
+# `gh api repos/brooswit-minecraft/dynamic-population/actions/secrets` ->
+# total_count 0) and this workflow does not need any — no Modrinth
+# publishing is wired here.
+permissions:
+  contents: write
+
+concurrency:
+  group: dynamic-population-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Resolve version
+        id: version
+        run: |
+          version=$(cat version.txt)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: ./gradlew build --no-daemon "-Pmod_version=$VERSION"
+
+      - name: Verify production server boots with the mod installed
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: python3 scripts/smoke-server.py "build/libs/dynamicpopulation-$VERSION.jar"
+
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          jar="build/libs/dynamicpopulation-$VERSION.jar"
+          test -f "$jar"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            # Idempotent on retry: a workflow re-run after the immutable
+            # release already exists must not rebuild or re-create it. Ship
+            # the original released artifact, never a later rebuild of the
+            # same version.
+            echo "Release v$VERSION already exists — skipping re-publish."
+          else
+            gh release create "v$VERSION" "$jar" --target "$GITHUB_SHA" \
+              --title "Dynamic Population $VERSION" --notes-file CHANGELOG.md --prerelease
+          fi

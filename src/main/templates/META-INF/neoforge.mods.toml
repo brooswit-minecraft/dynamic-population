@@ -1,0 +1,25 @@
+modLoader="javafml" #mandatory
+loaderVersion="${loader_version_range}" #mandatory
+
+license="${mod_license}"
+
+[[mods]] #mandatory
+modId="${mod_id}" #mandatory
+version="${mod_version}" #mandatory
+displayName="${mod_name}" #mandatory
+authors="brooswit"
+description='''Scaffold for Dynamic Population V1 (Fillagers): cell-based target-density population for NeoForge 1.21.1. This build is intentionally empty — no population/cell/entity logic — and exists to land the Gradle project, CI, server-boot smoke test, and path-gated release pipeline that every other Dynamic Population story depends on.'''
+
+[[dependencies.${mod_id}]]
+    modId="neoforge"
+    type="required"
+    versionRange="[${neo_version},)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
