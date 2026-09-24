@@ -4,16 +4,18 @@ import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;
 
+import io.github.brooswitminecraft.dynamicpopulation.cellfield.CellFieldStorage;
+import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 
 /**
- * Scaffold-only entry point for DPOP-11 (Implements DPOP-2). Deliberately
- * empty: no population/cell/entity logic ships until later DPOP stories,
- * which are all blocked on this project skeleton, CI, smoke test, and
- * release pipeline landing.
+ * Entry point. DPOP-11/DPOP-2 landed the empty scaffold; this story
+ * (DPOP-4/DPOP-12) adds the cell field storage attachment and the config
+ * scaffold it depends on -- still no propagation/King/Fillager/spawn logic,
+ * which all remain later stories.
  */
 @Mod(DynamicPopulationMod.MODID)
 public class DynamicPopulationMod {
@@ -21,6 +23,8 @@ public class DynamicPopulationMod {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public DynamicPopulationMod(IEventBus modEventBus, ModContainer modContainer) {
+        DynamicPopulationConfig.register(modContainer, modEventBus);
+        CellFieldStorage.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
     }
 
