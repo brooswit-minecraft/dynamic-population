@@ -60,7 +60,24 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.ConfigValue<Integer> CONFIG_VERSION;
     public static final ModConfigSpec SPEC;
 
-    public record Snapshot(int cellSize, int configVersion) { }
+    private static final ModConfigSpec.DoubleValue WEIGHT_DOWN;
+    private static final ModConfigSpec.DoubleValue WEIGHT_SIDES;
+    private static final ModConfigSpec.DoubleValue WEIGHT_UP;
+    private static final ModConfigSpec.DoubleValue SPREAD_FRACTION;
+    private static final ModConfigSpec.IntValue STEP_INTERVAL_TICKS;
+    private static final ModConfigSpec.IntValue TRAVERSABLE_SAMPLE_SPACING;
+
+    /** Smallest direction weight the config accepts: a zero weight would turn the weighted rule back into strict priority. */
+    public static final double MIN_WEIGHT = 0.01;
+
+    public record Snapshot(int cellSize, int configVersion, double weightDown, double weightSides, double weightUp,
+            double spreadFraction, int stepIntervalTicks, int traversableSampleSpacing) {
+        public Snapshot {
+            if (!(weightDown >= MIN_WEIGHT) || !(weightSides >= MIN_WEIGHT) || !(weightUp >= MIN_WEIGHT)) {
+                throw new IllegalArgumentException("propagation direction weights must be > 0");
+            }
+        }
+    }
 
     static {
         BUILDER.comment("Dynamic Population server config.");
@@ -86,6 +103,31 @@ public final class DynamicPopulationConfig {
                     + "to be re-applied after such a bump.")
             .define("configVersion", CURRENT_CONFIG_VERSION, value -> value instanceof Integer);
 
+        WEIGHT_DOWN = BUILDER
+            .comment(
+                "Propagation: relative share of what spreads out of a cell that goes DOWN each step. These three "
+                    + "weights are relative shares, not absolute rates (doubling all three changes nothing), and they "
+                    + "do not set how much population exists, only where it goes. Each must stay above zero: a zero "
+                    + "weight would turn the weighted rule into strict priority. Down should be heaviest.")
+            .defineInRange("propagation_weight_down", 3.0, MIN_WEIGHT, 100.0);
+        WEIGHT_SIDES = BUILDER
+            .comment("Propagation: relative share that goes to each of the four SIDES (see propagation_weight_down).")
+            .defineInRange("propagation_weight_sides", 2.0, MIN_WEIGHT, 100.0);
+        WEIGHT_UP = BUILDER
+            .comment("Propagation: relative share that goes UP (see propagation_weight_down). Up is never starved.")
+            .defineInRange("propagation_weight_up", 1.0, MIN_WEIGHT, 100.0);
+        SPREAD_FRACTION = BUILDER
+            .comment("Propagation: the share of a cell's population that leaves it per step (0.01..0.5). Higher "
+                + "spreads faster; it does not change how much population exists.")
+            .defineInRange("propagation_spread_fraction", 0.1, 0.01, 0.5);
+        STEP_INTERVAL_TICKS = BUILDER
+            .comment("Propagation: server ticks between propagation steps (1..1200). Lower is a faster simulation.")
+            .defineInRange("propagation_step_interval_ticks", 20, 1, 1200);
+        TRAVERSABLE_SAMPLE_SPACING = BUILDER
+            .comment("Propagation: a cell is traversable if it has at least one open or liquid block; blocks are "
+                + "sampled on a lattice this many blocks apart (4..32). Smaller is more accurate and slower.")
+            .defineInRange("traversable_sample_spacing", 8, 4, 32);
+
         SPEC = BUILDER.build();
     }
 
@@ -97,7 +139,7 @@ public final class DynamicPopulationConfig {
     // ("Cannot get config value before config is loaded") until FML has
     // actually loaded a backing file, which class-init happens well before;
     // observed directly via scripts/smoke-server.py during this change.
-    private static volatile Snapshot snapshot = new Snapshot(CELL_SIZE.getDefault(), CONFIG_VERSION.getDefault());
+    private static volatile Snapshot snapshot = defaults();
 
     private static boolean isValidCellSize(Object value) {
         return value instanceof Integer i && i >= 16 && i <= 1024 && i % 16 == 0;
@@ -108,7 +150,14 @@ public final class DynamicPopulationConfig {
     }
 
     private static Snapshot readSnapshot() {
-        return new Snapshot(CELL_SIZE.get(), CONFIG_VERSION.get());
+        return new Snapshot(CELL_SIZE.get(), CONFIG_VERSION.get(), WEIGHT_DOWN.get(), WEIGHT_SIDES.get(), WEIGHT_UP.get(),
+            SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get());
+    }
+
+    private static Snapshot defaults() {
+        return new Snapshot(CELL_SIZE.getDefault(), CONFIG_VERSION.getDefault(), WEIGHT_DOWN.getDefault(),
+            WEIGHT_SIDES.getDefault(), WEIGHT_UP.getDefault(), SPREAD_FRACTION.getDefault(),
+            STEP_INTERVAL_TICKS.getDefault(), TRAVERSABLE_SAMPLE_SPACING.getDefault());
     }
 
     /**
@@ -185,7 +234,7 @@ public final class DynamicPopulationConfig {
      */
     public static void onUnloading(ModConfigEvent.Unloading event) {
         if (event.getConfig().getSpec() == SPEC) {
-            snapshot = new Snapshot(CELL_SIZE.getDefault(), CONFIG_VERSION.getDefault());
+            snapshot = defaults();
         }
     }
 

@@ -26,6 +26,8 @@ public class DynamicPopulationMod {
         DynamicPopulationConfig.register(modContainer, modEventBus);
         CellFieldStorage.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationSimulation.class);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationCommands.class);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
