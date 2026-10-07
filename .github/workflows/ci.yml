@@ -25,6 +25,12 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      - name: Run script tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Check the mod does not require a newer NeoForge than the pack runs
+        run: python3 scripts/check_neoforge_floor.py
+
       - name: Build and test
         run: ./gradlew build --no-daemon
 
