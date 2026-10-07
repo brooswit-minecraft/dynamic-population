@@ -4,11 +4,13 @@ Dynamic Population — NeoForge 1.21.1 mod ("Fillagers"): a persistent
 population field that reconciles lightweight background villagers toward a
 target density. See epic DPOP-1 / story DPOP-2 for the full design.
 
-**Current state: scaffold only.** This repo currently ships an *empty* mod —
-no population/cell/entity logic — plus the Gradle project, CI, server-boot
-smoke test, and release pipeline that every later Dynamic Population story
-builds on. modid: `dynamicpopulation`. Base package:
-`io.github.brooswitminecraft.dynamicpopulation`.
+**Current state: storage + config scaffold, no gameplay yet.** This repo
+ships the Gradle project, CI, server-boot smoke test, and release pipeline
+(DPOP-11), plus a per-cell target-density storage format and a live-read
+server config (DPOP-12) — see `docs/cell-field-and-config.md`. There is still
+no propagation, Villager King, Fillager entity, spawn, or reconcile logic;
+nothing here is yet player-visible. modid: `dynamicpopulation`. Base
+package: `io.github.brooswitminecraft.dynamicpopulation`.
 
 ## Building
 
@@ -80,6 +82,15 @@ Because it triggers on `push: branches: [main]`, this workflow cannot
 execute end-to-end from a pull request — see the PR description for exactly
 what was verified before merge versus what remains unevidenced until it
 first runs on `main`.
+
+## Cell field storage and config scaffold
+
+`docs/cell-field-and-config.md` documents the per-anchor-chunk cell field
+storage format (header, stale/mismatch/corrupt decision table), the
+live-read config snapshot pattern, and the `configVersion` rename-aside
+sequence added in DPOP-12. `docs/release-note-template.md` is the template
+to follow when a future change to either touches a CHANGELOG `## Migration`
+section (see below).
 
 ## CHANGELOG conventions
 
