@@ -26,11 +26,12 @@ public final class PopulationSimulation {
 
     private PopulationSimulation() { }
 
-    static Set<CellKey> active(ServerLevel level) {
+    /** Public: the king package marks cells it seeds as active so propagation picks them up from there. */
+    public static Set<CellKey> active(ServerLevel level) {
         return ACTIVE.computeIfAbsent(level, l -> new HashSet<>());
     }
 
-    static boolean simulated(ServerLevel level) {
+    public static boolean simulated(ServerLevel level) {
         return level.dimension() == Level.OVERWORLD;
     }
 
@@ -49,7 +50,8 @@ public final class PopulationSimulation {
         return active.size();
     }
 
-    static LevelField field(ServerLevel level) {
+    /** Public: the king package builds the same real field glue to read/raise cell values near a King. */
+    public static LevelField field(ServerLevel level) {
         return new LevelField(level);
     }
 
