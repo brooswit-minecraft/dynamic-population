@@ -67,11 +67,20 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue STEP_INTERVAL_TICKS;
     private static final ModConfigSpec.IntValue TRAVERSABLE_SAMPLE_SPACING;
 
+    private static final ModConfigSpec.IntValue KING_UNIQUENESS_RADIUS_CELLS;
+    private static final ModConfigSpec.IntValue KING_MIN_SKY_LIGHT;
+    private static final ModConfigSpec.IntValue KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS;
+    private static final ModConfigSpec.IntValue KING_SEED_RADIUS_CELLS;
+    private static final ModConfigSpec.IntValue KING_SEED_RATE_PPT;
+    private static final ModConfigSpec.IntValue KING_SEED_INTERVAL_TICKS;
+
     /** Smallest direction weight the config accepts: a zero weight would turn the weighted rule back into strict priority. */
     public static final double MIN_WEIGHT = 0.01;
 
     public record Snapshot(int cellSize, int configVersion, double weightDown, double weightSides, double weightUp,
-            double spreadFraction, int stepIntervalTicks, int traversableSampleSpacing) {
+            double spreadFraction, int stepIntervalTicks, int traversableSampleSpacing,
+            int kingUniquenessRadiusCells, int kingMinSkyLight, int kingMaxDepthBelowSurfaceBlocks,
+            int kingSeedRadiusCells, int kingSeedRatePpt, int kingSeedIntervalTicks) {
         public Snapshot {
             if (!(weightDown >= MIN_WEIGHT) || !(weightSides >= MIN_WEIGHT) || !(weightUp >= MIN_WEIGHT)) {
                 throw new IllegalArgumentException("propagation direction weights must be > 0");
@@ -128,6 +137,43 @@ public final class DynamicPopulationConfig {
                 + "sampled on a lattice this many blocks apart (4..32). Smaller is more accurate and slower.")
             .defineInRange("traversable_sample_spacing", 8, 4, 32);
 
+        KING_UNIQUENESS_RADIUS_CELLS = BUILDER
+            .comment(
+                "Villager King (AC4): a second King may not spawn/persist within this many cells (horizontally, "
+                    + "Chebyshev distance, same cell_size the field uses) of an existing King -- this IS the "
+                    + "ticket's 'relevant loaded area'. 1..64.")
+            .defineInRange("king_uniqueness_radius_cells", 8, 1, 64);
+        KING_MIN_SKY_LIGHT = BUILDER
+            .comment(
+                "Villager King (AC4) territory preference: minimum sky light (0 = none, 15 = fully open to sky) "
+                    + "a location needs to count as suitable surface territory. 0..15.")
+            .defineInRange("king_min_sky_light", 9, 0, 15);
+        KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS = BUILDER
+            .comment(
+                "Villager King (AC4) territory preference: a location must be no more than this many blocks "
+                    + "below the heightmap surface (MOTION_BLOCKING) to count as suitable surface territory. "
+                    + "0..64. Biome preference itself (plains-family) is a fixed tag check, not a numeric "
+                    + "tunable -- there is no meaningful range for 'how plains-y'.")
+            .defineInRange("king_max_depth_below_surface_blocks", 4, 0, 64);
+        KING_SEED_RADIUS_CELLS = BUILDER
+            .comment(
+                "Villager King (AC4) seeding: horizontal radius, in cells (Chebyshev, King's own layer only), "
+                    + "within which the King raises the cell field's target density each seeding step. 1..64.")
+            .defineInRange("king_seed_radius_cells", 3, 1, 64);
+        KING_SEED_RATE_PPT = BUILDER
+            .comment(
+                "Villager King (AC4) seeding: parts-per-thousand added to each traversable cell in range per "
+                    + "seeding step (capped at the field's own CAPACITY, never exceeds it). 1..1000.")
+            .defineInRange("king_seed_rate_ppt", 5, 1, 1000);
+        KING_SEED_INTERVAL_TICKS = BUILDER
+            .comment(
+                "Villager King (AC4) seeding: server ticks between seeding steps. Separate from "
+                    + "propagation_step_interval_ticks -- seeding and propagation are independent rates. 1..1200. "
+                    + "Lifespan: fixed-decisions deliberately leaves the King unbounded (never despawns on its "
+                    + "own) -- there is no lifespan key because there is no numeric tunable to attach to that "
+                    + "choice; see docs/villager-king.md.")
+            .defineInRange("king_seed_interval_ticks", 20, 1, 1200);
+
         SPEC = BUILDER.build();
     }
 
@@ -151,13 +197,18 @@ public final class DynamicPopulationConfig {
 
     private static Snapshot readSnapshot() {
         return new Snapshot(CELL_SIZE.get(), CONFIG_VERSION.get(), WEIGHT_DOWN.get(), WEIGHT_SIDES.get(), WEIGHT_UP.get(),
-            SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get());
+            SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get(),
+            KING_UNIQUENESS_RADIUS_CELLS.get(), KING_MIN_SKY_LIGHT.get(), KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.get(),
+            KING_SEED_RADIUS_CELLS.get(), KING_SEED_RATE_PPT.get(), KING_SEED_INTERVAL_TICKS.get());
     }
 
     private static Snapshot defaults() {
         return new Snapshot(CELL_SIZE.getDefault(), CONFIG_VERSION.getDefault(), WEIGHT_DOWN.getDefault(),
             WEIGHT_SIDES.getDefault(), WEIGHT_UP.getDefault(), SPREAD_FRACTION.getDefault(),
-            STEP_INTERVAL_TICKS.getDefault(), TRAVERSABLE_SAMPLE_SPACING.getDefault());
+            STEP_INTERVAL_TICKS.getDefault(), TRAVERSABLE_SAMPLE_SPACING.getDefault(),
+            KING_UNIQUENESS_RADIUS_CELLS.getDefault(), KING_MIN_SKY_LIGHT.getDefault(),
+            KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.getDefault(), KING_SEED_RADIUS_CELLS.getDefault(),
+            KING_SEED_RATE_PPT.getDefault(), KING_SEED_INTERVAL_TICKS.getDefault());
     }
 
     /**
