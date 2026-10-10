@@ -14,8 +14,11 @@ import net.minecraft.world.level.chunk.LevelChunk;
 /**
  * The field of one level, backed by the cell_field attachments of loaded anchor chunks. A cell whose anchor
  * chunk is not loaded, or whose stored data is preserved-as-corrupt, does not take part (it is not traversable).
+ *
+ * <p>Public (not package-private): the king package reuses this exact glue to read/raise the real cell field
+ * near a King, rather than re-deriving a second NeoForge bridge to the same {@code cell_field} attachment.
  */
-final class LevelField implements Propagation.Field {
+public final class LevelField implements Propagation.Field {
     private final ServerLevel level;
     private final int cellSize;
     private final int footprint;
@@ -24,7 +27,7 @@ final class LevelField implements Propagation.Field {
     private final int sampleSpacing;
     private final Map<CellKey, Boolean> traversableCache = new HashMap<>();
 
-    LevelField(ServerLevel level) {
+    public LevelField(ServerLevel level) {
         this.level = level;
         var config = DynamicPopulationConfig.get();
         this.cellSize = config.cellSize();
@@ -34,7 +37,7 @@ final class LevelField implements Propagation.Field {
         this.sampleSpacing = config.traversableSampleSpacing();
     }
 
-    CellKey cellAt(BlockPos pos) {
+    public CellKey cellAt(BlockPos pos) {
         return new CellKey(Math.floorDiv(pos.getX(), cellSize), CellGrid.layerIndex(pos.getY(), minY, cellSize), Math.floorDiv(pos.getZ(), cellSize));
     }
 
