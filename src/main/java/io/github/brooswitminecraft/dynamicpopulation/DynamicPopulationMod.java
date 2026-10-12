@@ -6,6 +6,7 @@ import com.mojang.logging.LogUtils;
 
 import io.github.brooswitminecraft.dynamicpopulation.cellfield.CellFieldStorage;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
+import io.github.brooswitminecraft.dynamicpopulation.entity.DynamicPopulationEntities;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -25,9 +26,11 @@ public class DynamicPopulationMod {
     public DynamicPopulationMod(IEventBus modEventBus, ModContainer modContainer) {
         DynamicPopulationConfig.register(modContainer, modEventBus);
         CellFieldStorage.register(modEventBus);
+        DynamicPopulationEntities.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationSimulation.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationCommands.class);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.FillagerPopulationSimulation.class);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {

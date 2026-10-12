@@ -4,13 +4,13 @@ Dynamic Population — NeoForge 1.21.1 mod ("Fillagers"): a persistent
 population field that reconciles lightweight background villagers toward a
 target density. See epic DPOP-1 / story DPOP-2 for the full design.
 
-**Current state: storage + config scaffold, no gameplay yet.** This repo
-ships the Gradle project, CI, server-boot smoke test, and release pipeline
-(DPOP-11), plus a per-cell target-density storage format and a live-read
-server config (DPOP-12) — see `docs/cell-field-and-config.md`. There is still
-no propagation, Villager King, Fillager entity, spawn, or reconcile logic;
-nothing here is yet player-visible. modid: `dynamicpopulation`. Base
-package: `io.github.brooswitminecraft.dynamicpopulation`.
+**Current state: field propagation and bounded Fillager reconciliation.** This
+repo ships the Gradle project, CI, server-boot smoke test, release pipeline,
+per-cell target-density storage, live-read server config, and a lightweight
+Fillager entity. Reconciliation reads a configurable neighbourhood sample but
+never writes averaged values back to the field; unsafe deaths lower only their
+local cell. modid: `dynamicpopulation`. Base package:
+`io.github.brooswitminecraft.dynamicpopulation`.
 
 ## Building
 
