@@ -9,6 +9,12 @@ import io.github.brooswitminecraft.dynamicpopulation.propagation.Propagation;
 public final class FillagerReconciliation {
     private FillagerReconciliation() { }
 
+    /** An overlapping entity box is only a candidate: ownership is the entity's block-position cell. */
+    public static <T> java.util.List<T> residentsInCell(java.util.List<T> candidates, CellKey cell,
+            java.util.function.Function<T, CellKey> owner) {
+        return candidates.stream().filter(candidate -> cell.equals(owner.apply(candidate))).toList();
+    }
+
     public record Params(int horizontalRadius, int verticalRadius, int fillagersPerFullCell, int refillLimit,
             int spawnCap, int despawnCap) { }
 

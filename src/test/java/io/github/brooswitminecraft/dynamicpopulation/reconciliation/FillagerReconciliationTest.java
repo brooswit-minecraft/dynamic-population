@@ -13,6 +13,27 @@ class FillagerReconciliationTest {
     private static final CellKey ORIGIN = new CellKey(0, 0, 0);
 
     @Test
+    void overlappingBoxesDoNotGiveNeighbourCellsOwnership() {
+        // Each query can return both entities because their boxes cross a horizontal or vertical boundary.
+        record Resident(CellKey owner) { }
+        for (CellKey neighbour : java.util.List.of(ORIGIN.offset(1, 0, 0), ORIGIN.offset(0, 1, 0))) {
+            var local = new Resident(ORIGIN);
+            var foreign = new Resident(neighbour);
+            var overlapping = java.util.List.of(local, foreign);
+            assertEquals(java.util.List.of(local),
+                FillagerReconciliation.residentsInCell(overlapping, ORIGIN, Resident::owner));
+            assertEquals(java.util.List.of(foreign),
+                FillagerReconciliation.residentsInCell(overlapping, neighbour, Resident::owner));
+
+            var neighbourResidents = FillagerReconciliation.residentsInCell(java.util.List.of(local),
+                neighbour, Resident::owner);
+            var params = new FillagerReconciliation.Params(0, 0, 8, 1, 2, 2);
+            assertEquals(0, FillagerReconciliation.decide(neighbour, neighbourResidents.size(),
+                params, cell -> 0).despawn(), "zero-target neighbour must not discard the local resident");
+        }
+    }
+
+    @Test
     void samplingIsReadOnlyEvenWhenRepeated() {
         Map<CellKey, Integer> storage = new HashMap<>();
         storage.put(ORIGIN, 800);
