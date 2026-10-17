@@ -39,10 +39,11 @@ public final class FillagerPopulationSimulation {
     static void reconcile(ServerLevel level, DynamicPopulationConfig.Snapshot config) {
         LevelField field = PopulationSimulation.field(level);
         Set<CellKey> cells = new HashSet<>(PopulationSimulation.active(level));
-        for (Fillager fillager : level.getEntitiesOfClass(Fillager.class, new AABB(level.getWorldBorder().getMinX(),
-                level.getMinBuildHeight(), level.getWorldBorder().getMinZ(), level.getWorldBorder().getMaxX(),
-                level.getMaxBuildHeight(), level.getWorldBorder().getMaxZ()))) {
-            cells.add(field.cellAt(fillager.blockPosition()));
+        // Iterate loaded entities directly, never query an AABB spanning the whole world border.
+        for (var entity : level.getAllEntities()) {
+            if (entity instanceof Fillager fillager) {
+                cells.add(field.cellAt(fillager.blockPosition()));
+            }
         }
         var params = new FillagerReconciliation.Params(config.samplingHorizontalRadius(), config.samplingVerticalRadius(),
             config.fillagersPerFullCell(), config.reconciliationRefillPerInterval(), config.spawnCapPerInterval(),
