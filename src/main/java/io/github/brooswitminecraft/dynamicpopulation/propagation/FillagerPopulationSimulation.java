@@ -67,7 +67,8 @@ public final class FillagerPopulationSimulation {
         int size = field.cellSize();
         int minY = level.getMinBuildHeight() + cell.layer() * size;
         AABB bounds = new AABB(cell.x() * size, minY, cell.z() * size, (cell.x() + 1) * size, minY + size, (cell.z() + 1) * size);
-        return level.getEntitiesOfClass(Fillager.class, bounds);
+        return level.getEntitiesOfClass(Fillager.class, bounds,
+            fillager -> field.cellAt(fillager.blockPosition()).equals(cell));
     }
 
     private static void spawn(ServerLevel level, LevelField field, CellKey cell) {
