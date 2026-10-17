@@ -13,6 +13,12 @@ permissions:
   contents: read
 
 jobs:
+  release-gate:
+    uses: brooswit-factory/release-gate/.github/workflows/gate.yml@v1
+    with:
+      gated-paths: '["^src/", "^version\\.txt$"]'
+      version-file: 'version.txt'
+
   build:
     runs-on: ubuntu-latest
     steps:
