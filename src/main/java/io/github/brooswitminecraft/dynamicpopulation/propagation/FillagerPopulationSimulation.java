@@ -11,7 +11,9 @@ import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerReco
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.levelgen.Heightmap;
+import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerSpawnSearch;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.core.Direction;
 import net.minecraft.world.phys.AABB;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
@@ -69,13 +71,39 @@ public final class FillagerPopulationSimulation {
 
     private static void spawn(ServerLevel level, LevelField field, CellKey cell) {
         int size = field.cellSize();
-        int x = cell.x() * size + size / 2;
-        int z = cell.z() * size + size / 2;
-        int y = Math.max(level.getMinBuildHeight(), Math.min(level.getMaxBuildHeight() - 1,
-            level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)));
+        int x = cell.x() * size + level.random.nextInt(size);
+        int z = cell.z() * size + level.random.nextInt(size);
+        // Never load a chunk merely to populate it.
+        if (!level.hasChunk(x >> 4, z >> 4)) {
+            return;
+        }
+        var y = FillagerSpawnSearch.findY(cell.layer(), size, level.getMinBuildHeight(), level.getMaxBuildHeight(),
+            candidate -> safeSpawn(level, new BlockPos(x, candidate, z)));
+        if (y.isEmpty()) {
+            return;
+        }
         Fillager fillager = new Fillager(DynamicPopulationEntities.FILLAGER.get(), level);
-        fillager.moveTo(x + 0.5, y, z + 0.5, level.random.nextFloat() * 360F, 0);
-        level.addFreshEntity(fillager);
+        fillager.moveTo(x + 0.5, y.getAsInt(), z + 0.5, level.random.nextFloat() * 360F, 0);
+        if (level.getWorldBorder().isWithinBounds(fillager.getBoundingBox()) && level.noCollision(fillager)) {
+            level.addFreshEntity(fillager);
+        }
+    }
+
+    private static boolean safeSpawn(ServerLevel level, BlockPos pos) {
+        var feet = level.getBlockState(pos);
+        var head = level.getBlockState(pos.above());
+        var floor = level.getBlockState(pos.below());
+        return floor.isFaceSturdy(level, pos.below(), Direction.UP)
+            && floor.getFluidState().isEmpty() && feet.getFluidState().isEmpty() && head.getFluidState().isEmpty()
+            && !hazard(floor) && !hazard(feet) && !hazard(head)
+            && level.noCollision(new AABB(pos.getX() + 0.2, pos.getY(), pos.getZ() + 0.2,
+                pos.getX() + 0.8, pos.getY() + 1.95, pos.getZ() + 0.8));
+    }
+
+    private static boolean hazard(net.minecraft.world.level.block.state.BlockState state) {
+        return state.is(Blocks.FIRE) || state.is(Blocks.SOUL_FIRE) || state.is(Blocks.MAGMA_BLOCK)
+            || state.is(Blocks.CACTUS) || state.is(Blocks.CAMPFIRE) || state.is(Blocks.SOUL_CAMPFIRE)
+            || state.is(Blocks.SWEET_BERRY_BUSH) || state.is(Blocks.WITHER_ROSE);
     }
 
     @SubscribeEvent

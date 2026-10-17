@@ -6,7 +6,7 @@ target density. See epic DPOP-1 / story DPOP-2 for the full design.
 
 **Current state: field propagation and bounded Fillager reconciliation.** This
 repo ships the Gradle project, CI, server-boot smoke test, release pipeline,
-per-cell target-density storage, live-read server config, and a lightweight
+per-cell target-density storage, live-read server config, a Villager King mechanism, and a lightweight
 Fillager entity. Reconciliation reads a configurable neighbourhood sample but
 never writes averaged values back to the field; unsafe deaths lower only their
 local cell. modid: `dynamicpopulation`. Base package:
@@ -34,7 +34,7 @@ what the release workflow does.
 NeoForge 1.21.1 server under a fresh temp directory, boots it, and verifies
 two things from the server log: the mod's own startup line
 (`Dynamic Population scaffold loaded`) appears, and the server reaches
-`Done (...)! For help, type "help"` — then it sends `stop` and requires a
+`Done (...)! For help, type "help"` — it also summons a Fillager and verifies its presence, then it sends `stop` and requires a
 clean (exit code 0) shutdown. It never touches any persistent world or real
 server; everything happens in a directory that is deleted on exit.
 
