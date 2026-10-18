@@ -20,14 +20,27 @@ public final class FillagerReconciliation {
 
     public record Decision(int sampledTarget, int desired, int spawn, int despawn) { }
 
-    /** Returns an arithmetic sample of readable cells. This method never receives, and cannot mutate, storage. */
-    public static int sampledTarget(CellKey centre, int horizontalRadius, int verticalRadius, ToIntFunction<CellKey> read) {
+    /**
+     * Returns an arithmetic sample of readable cells. This method never receives, and cannot mutate, storage.
+     *
+     * <p>{@code minLayer}/{@code maxLayer} (inclusive) are the world's own valid layer range, never a config
+     * value: a layer outside it does not exist, so it is excluded from both the sum and the denominator
+     * rather than contributing a 0 as if it were a real, merely-empty cell. Without this clamp, a window that
+     * crosses a world edge would undercount every cell inside the window too (e.g. a uniform field would
+     * read as lower density near the top/bottom of the world purely because the window is clipped there).
+     */
+    public static int sampledTarget(CellKey centre, int horizontalRadius, int verticalRadius, int minLayer,
+            int maxLayer, ToIntFunction<CellKey> read) {
         long total = 0;
         int count = 0;
         for (int x = -horizontalRadius; x <= horizontalRadius; x++) {
             for (int z = -horizontalRadius; z <= horizontalRadius; z++) {
                 for (int y = -verticalRadius; y <= verticalRadius; y++) {
-                    total += Math.max(0, Math.min(Propagation.CAPACITY, read.applyAsInt(centre.offset(x, y, z))));
+                    CellKey cell = centre.offset(x, y, z);
+                    if (cell.layer() < minLayer || cell.layer() > maxLayer) {
+                        continue;
+                    }
+                    total += Math.max(0, Math.min(Propagation.CAPACITY, read.applyAsInt(cell)));
                     count++;
                 }
             }
@@ -35,8 +48,9 @@ public final class FillagerReconciliation {
         return count == 0 ? 0 : (int) (total / count);
     }
 
-    public static Decision decide(CellKey centre, int current, Params params, ToIntFunction<CellKey> read) {
-        int target = sampledTarget(centre, params.horizontalRadius(), params.verticalRadius(), read);
+    public static Decision decide(CellKey centre, int current, Params params, int minLayer, int maxLayer,
+            ToIntFunction<CellKey> read) {
+        int target = sampledTarget(centre, params.horizontalRadius(), params.verticalRadius(), minLayer, maxLayer, read);
         int desired = (int) Math.round(target * params.fillagersPerFullCell() / (double) Propagation.CAPACITY);
         int missing = Math.max(0, desired - current);
         int excess = Math.max(0, current - desired);
