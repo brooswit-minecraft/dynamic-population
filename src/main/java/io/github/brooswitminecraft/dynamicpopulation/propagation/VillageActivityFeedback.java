@@ -48,20 +48,37 @@ public final class VillageActivityFeedback {
         return level instanceof ServerLevel serverLevel && PopulationSimulation.simulated(serverLevel);
     }
 
-    private static void raise(ServerLevel level, BlockPos pos, int increment) {
-        LevelField field = PopulationSimulation.field(level);
-        raise(field.cellAt(pos), increment, field::get, field::set, PopulationSimulation.active(level)::add);
+    /**
+     * Per-activity raise adapters are the actual production join point every raise event hook calls into
+     * (not a re-derived copy of their logic) -- each selects ITS OWN config getter internally, rather than
+     * the caller supplying an already-resolved {@code increment}, so a production bug that reads the wrong
+     * weight (or an omitted call entirely) is something a test calling the adapter can actually catch;
+     * passing increment/cell in from outside (the previous round's shape) could not. Decoupled from
+     * {@link ServerLevel}/{@link LevelField} so a test can drive each one with a plain map and set, the
+     * same way {@link FillagerReconciliation}'s own pure functions are tested.
+     */
+    static void raiseForTrade(CellKey cell, ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write,
+            Consumer<CellKey> markActive) {
+        FillagerReconciliation.raiseLocalTargetAndActivate(cell, DynamicPopulationConfig.get().villageTradeTargetIncrement(),
+            read, write, markActive);
     }
 
-    /**
-     * The real adapter every raise event hook calls into -- decoupled from {@link ServerLevel}/
-     * {@link LevelField} so a test can drive it with a plain map and set, the same way
-     * {@link FillagerReconciliation}'s own pure functions are tested, while still exercising the exact
-     * method the event handlers below call (not a re-derived copy of their logic).
-     */
-    static void raise(CellKey cell, int increment, ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write,
+    static void raiseForBuilding(CellKey cell, ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write,
             Consumer<CellKey> markActive) {
-        FillagerReconciliation.raiseLocalTargetAndActivate(cell, increment, read, write, markActive);
+        FillagerReconciliation.raiseLocalTargetAndActivate(cell, DynamicPopulationConfig.get().villageBuildingTargetIncrement(),
+            read, write, markActive);
+    }
+
+    static void raiseForFarming(CellKey cell, ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write,
+            Consumer<CellKey> markActive) {
+        FillagerReconciliation.raiseLocalTargetAndActivate(cell, DynamicPopulationConfig.get().villageFarmingTargetIncrement(),
+            read, write, markActive);
+    }
+
+    static void raiseForGolemCreation(CellKey cell, ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write,
+            Consumer<CellKey> markActive) {
+        FillagerReconciliation.raiseLocalTargetAndActivate(cell,
+            DynamicPopulationConfig.get().villageGolemCreationTargetIncrement(), read, write, markActive);
     }
 
     /** Trading (AC6): a player trading with any villager-family entity is positive village activity. */
@@ -70,7 +87,9 @@ public final class VillageActivityFeedback {
         if (!(event.getAbstractVillager().level() instanceof ServerLevel level) || !overworld(level)) {
             return;
         }
-        raise(level, event.getAbstractVillager().blockPosition(), DynamicPopulationConfig.get().villageTradeTargetIncrement());
+        LevelField field = PopulationSimulation.field(level);
+        raiseForTrade(field.cellAt(event.getAbstractVillager().blockPosition()), field::get, field::set,
+            PopulationSimulation.active(level)::add);
     }
 
     /**
@@ -126,22 +145,30 @@ public final class VillageActivityFeedback {
 
     @SubscribeEvent
     public static void onBreeding(EntityJoinLevelEvent event) {
-        if (!(event.getEntity() instanceof Villager villager) || !isConfirmedBreedingBirth(BREEDING_SPAWNS, villager)
-                || !(event.getLevel() instanceof ServerLevel level) || !overworld(level)) {
+        if (!(event.getEntity() instanceof Villager villager) || !(event.getLevel() instanceof ServerLevel level)
+                || !overworld(level)) {
             return;
         }
-        raise(level, villager.blockPosition(), DynamicPopulationConfig.get().villageBreedingTargetIncrement());
+        LevelField field = PopulationSimulation.field(level);
+        confirmBreedingBirth(BREEDING_SPAWNS, villager, field.cellAt(villager.blockPosition()), field::get,
+            field::set, PopulationSimulation.active(level)::add);
     }
 
     /**
-     * The pure, unit-tested half of the two-event breeding-birth tracking: marking happens in
-     * {@link #onFinalizeSpawn} ({@code pending.add}, not shown here since {@link Set#add} needs no
-     * wrapper), confirming (and consuming, so a later unrelated join of the same entity -- impossible in
-     * practice, but not relied upon -- can never confirm twice) happens here, at
-     * {@link #onBreeding}'s join-time call site, generic so it is testable without any Minecraft type.
+     * The pure, unit-tested half of the two-event breeding-birth tracking AND the activity-specific adapter
+     * for breeding: marking happens in {@link #onFinalizeSpawn} ({@code pending.add}, not shown here since
+     * {@link Set#add} needs no wrapper); this is the confirm-and-consume-then-raise step, generic over the
+     * entity type so it is testable without any Minecraft type, but using the exact same
+     * {@code villageBreedingTargetIncrement} getter {@link #onBreeding} would otherwise have called inline.
+     * A join NOT preceded by a matching {@link #onFinalizeSpawn} mark (an ordinary villager joining the
+     * level any other way) must never read, write, or activate the cell -- not just leave it unchanged.
      */
-    static <T> boolean isConfirmedBreedingBirth(Set<T> pendingBreedingSpawns, T entity) {
-        return pendingBreedingSpawns.remove(entity);
+    static <T> void confirmBreedingBirth(Set<T> pendingBreedingSpawns, T entity, CellKey cell,
+            ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write, Consumer<CellKey> markActive) {
+        if (pendingBreedingSpawns.remove(entity)) {
+            FillagerReconciliation.raiseLocalTargetAndActivate(cell,
+                DynamicPopulationConfig.get().villageBreedingTargetIncrement(), read, write, markActive);
+        }
     }
 
     /** Building (AC6): any block a player places. */
@@ -151,7 +178,8 @@ public final class VillageActivityFeedback {
         if (!(entity instanceof Player) || !(event.getLevel() instanceof ServerLevel level) || !overworld(level)) {
             return;
         }
-        raise(level, event.getPos(), DynamicPopulationConfig.get().villageBuildingTargetIncrement());
+        LevelField field = PopulationSimulation.field(level);
+        raiseForBuilding(field.cellAt(event.getPos()), field::get, field::set, PopulationSimulation.active(level)::add);
     }
 
     /** Farming (AC6): any crop-family block finishing a growth step. */
@@ -160,7 +188,8 @@ public final class VillageActivityFeedback {
         if (!(event.getLevel() instanceof ServerLevel level) || !overworld(level)) {
             return;
         }
-        raise(level, event.getPos(), DynamicPopulationConfig.get().villageFarmingTargetIncrement());
+        LevelField field = PopulationSimulation.field(level);
+        raiseForFarming(field.cellAt(event.getPos()), field::get, field::set, PopulationSimulation.active(level)::add);
     }
 
     /** Golem creation (AC6): a freshly-created Iron Golem, never one merely loaded back in from disk. */
@@ -170,10 +199,22 @@ public final class VillageActivityFeedback {
                 || !(event.getLevel() instanceof ServerLevel level) || !overworld(level)) {
             return;
         }
-        raise(level, golem.blockPosition(), DynamicPopulationConfig.get().villageGolemCreationTargetIncrement());
+        LevelField field = PopulationSimulation.field(level);
+        raiseForGolemCreation(field.cellAt(golem.blockPosition()), field::get, field::set,
+            PopulationSimulation.active(level)::add);
     }
 
-    /** Destruction (AC6): every distinct cell an explosion actually touched, never a neighbour it didn't. */
+    /**
+     * Destruction (AC6): every distinct cell an explosion actually touched, never a neighbour it didn't --
+     * the activity-specific adapter selects its own {@code villageDestructionTargetDecrement} getter
+     * internally, same as every raise adapter above.
+     */
+    static void lowerForDestruction(Set<CellKey> touchedCells, ToIntFunction<CellKey> read,
+            BiConsumer<CellKey, Integer> write) {
+        FillagerReconciliation.applyDestruction(touchedCells, DynamicPopulationConfig.get().villageDestructionTargetDecrement(),
+            read, write);
+    }
+
     @SubscribeEvent
     public static void onExplosion(ExplosionEvent.Detonate event) {
         if (!(event.getLevel() instanceof ServerLevel level) || !overworld(level)) {
@@ -184,7 +225,6 @@ public final class VillageActivityFeedback {
         for (BlockPos pos : event.getAffectedBlocks()) {
             touchedCells.add(field.cellAt(pos));
         }
-        FillagerReconciliation.applyDestruction(touchedCells, DynamicPopulationConfig.get().villageDestructionTargetDecrement(),
-            field::get, field::set);
+        lowerForDestruction(touchedCells, field::get, field::set);
     }
 }
