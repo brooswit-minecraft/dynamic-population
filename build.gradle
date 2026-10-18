@@ -83,11 +83,21 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    // moddev resolves "net.neoforged:neoforge" specially only for sourceSets it manages (declared in the
+    // `mods {}` block above); a plain testImplementation of that coordinate resolves to an empty artifact.
+    // Reuse main's already-resolved compile classpath instead (see configurations{} below), which is enough
+    // for the FML/NeoForge config classes (ModConfigSpec, ModConfigEvent, nightconfig) this test support
+    // class needs.
 }
 
 test {
     useJUnitPlatform()
 }
+
+// See the testImplementation comment above dependencies{}: moddev only special-cases "net.neoforged:neoforge"
+// resolution for sourceSets it manages, so test borrows main's already-resolved classpath directly instead.
+configurations.testCompileClasspath.extendsFrom(configurations.compileClasspath)
+configurations.testRuntimeClasspath.extendsFrom(configurations.runtimeClasspath)
 
 // Expands `${mod_version}` and friends in neoforge.mods.toml to the values
 // computed above, so the jar's file name and the version baked into the

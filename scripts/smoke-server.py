@@ -63,6 +63,20 @@ def boot(root):
                         f"startup marker ({MOD_LOADED_MARKER!r}) — mod did not load."
                     )
                 break
+        # Exercise the registered entity on the real server, not only pure arithmetic.
+        process.stdin.write('summon dynamicpopulation:fillager 0 -60 0 {Tags:["dpop_smoke"]}\n')
+        process.stdin.write(
+            'execute if entity @e[type=dynamicpopulation:fillager,tag=dpop_smoke] '
+            'run say DPOP_FILLAGER_SPAWN_OK\n'
+        )
+        process.stdin.flush()
+        deadline = time.monotonic() + 30
+        while True:
+            line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+            if line is None:
+                raise RuntimeError("Server exited while creating the Fillager")
+            if "DPOP_FILLAGER_SPAWN_OK" in line:
+                break
         process.stdin.write("stop\n")
         process.stdin.flush()
         rc = process.wait(timeout=60)

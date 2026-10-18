@@ -74,13 +74,25 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue KING_SEED_RATE_PPT;
     private static final ModConfigSpec.IntValue KING_SEED_INTERVAL_TICKS;
 
+    private static final ModConfigSpec.IntValue SAMPLING_HORIZONTAL_RADIUS;
+    private static final ModConfigSpec.IntValue SAMPLING_VERTICAL_RADIUS;
+    private static final ModConfigSpec.IntValue FILLAGERS_PER_FULL_CELL;
+    private static final ModConfigSpec.IntValue RECONCILIATION_REFILL_PER_INTERVAL;
+    private static final ModConfigSpec.IntValue SPAWN_CAP_PER_INTERVAL;
+    private static final ModConfigSpec.IntValue DESPAWN_CAP_PER_INTERVAL;
+    private static final ModConfigSpec.IntValue RECONCILIATION_INTERVAL_TICKS;
+    private static final ModConfigSpec.IntValue UNSAFE_DEATH_TARGET_DECREMENT;
+
     /** Smallest direction weight the config accepts: a zero weight would turn the weighted rule back into strict priority. */
     public static final double MIN_WEIGHT = 0.01;
 
     public record Snapshot(int cellSize, int configVersion, double weightDown, double weightSides, double weightUp,
             double spreadFraction, int stepIntervalTicks, int traversableSampleSpacing,
             int kingUniquenessRadiusCells, int kingMinSkyLight, int kingMaxDepthBelowSurfaceBlocks,
-            int kingSeedRadiusCells, int kingSeedRatePpt, int kingSeedIntervalTicks) {
+            int kingSeedRadiusCells, int kingSeedRatePpt, int kingSeedIntervalTicks, int samplingHorizontalRadius,
+            int samplingVerticalRadius, int fillagersPerFullCell, int reconciliationRefillPerInterval,
+            int spawnCapPerInterval, int despawnCapPerInterval, int reconciliationIntervalTicks,
+            int unsafeDeathTargetDecrement) {
         public Snapshot {
             if (!(weightDown >= MIN_WEIGHT) || !(weightSides >= MIN_WEIGHT) || !(weightUp >= MIN_WEIGHT)) {
                 throw new IllegalArgumentException("propagation direction weights must be > 0");
@@ -174,6 +186,21 @@ public final class DynamicPopulationConfig {
                     + "choice; see docs/villager-king.md.")
             .defineInRange("king_seed_interval_ticks", 20, 1, 1200);
 
+        SAMPLING_HORIZONTAL_RADIUS = BUILDER.comment("Fillager reconciliation: horizontal radius, in cells, sampled around a decision (0..16). A larger window makes the decision smoother and less local; it does NOT raise population density.").defineInRange("fillager_sampling_horizontal_radius", 5, 0, 16);
+        SAMPLING_VERTICAL_RADIUS = BUILDER.comment("Fillager reconciliation: vertical radius, in cells, sampled around a decision (0..6). A larger window makes the decision smoother and less local; it does NOT raise population density.").defineInRange("fillager_sampling_vertical_radius", 2, 0, 6);
+        FILLAGERS_PER_FULL_CELL = BUILDER.comment("Fillager reconciliation: temporary Fillagers represented by a cell at 1000 ppt target density (1..64).")
+            .defineInRange("fillagers_per_full_cell", 8, 1, 64);
+        RECONCILIATION_REFILL_PER_INTERVAL = BUILDER.comment("Fillager reconciliation: maximum missing Fillagers refilled in one interval (1..64); this bounded rate makes promotion leave a temporary gap.")
+            .defineInRange("fillager_refill_per_interval", 1, 1, 64);
+        SPAWN_CAP_PER_INTERVAL = BUILDER.comment("Fillager reconciliation: maximum Fillagers spawned by one sampled-cell decision per interval (1..64).")
+            .defineInRange("fillager_spawn_cap_per_interval", 2, 1, 64);
+        DESPAWN_CAP_PER_INTERVAL = BUILDER.comment("Fillager reconciliation: maximum excess Fillagers removed by one sampled-cell decision per interval (1..64).")
+            .defineInRange("fillager_despawn_cap_per_interval", 2, 1, 64);
+        RECONCILIATION_INTERVAL_TICKS = BUILDER.comment("Fillager reconciliation: server ticks between sampled spawn/despawn decisions (1..1200).")
+            .defineInRange("fillager_reconciliation_interval_ticks", 40, 1, 1200);
+        UNSAFE_DEATH_TARGET_DECREMENT = BUILDER.comment("Fillager reconciliation: ppt removed from only the local cell when a Fillager dies at an unsafe location (1..1000).")
+            .defineInRange("fillager_unsafe_death_target_decrement", 25, 1, 1000);
+
         SPEC = BUILDER.build();
     }
 
@@ -199,7 +226,8 @@ public final class DynamicPopulationConfig {
         return new Snapshot(CELL_SIZE.get(), CONFIG_VERSION.get(), WEIGHT_DOWN.get(), WEIGHT_SIDES.get(), WEIGHT_UP.get(),
             SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get(),
             KING_UNIQUENESS_RADIUS_CELLS.get(), KING_MIN_SKY_LIGHT.get(), KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.get(),
-            KING_SEED_RADIUS_CELLS.get(), KING_SEED_RATE_PPT.get(), KING_SEED_INTERVAL_TICKS.get());
+            KING_SEED_RADIUS_CELLS.get(), KING_SEED_RATE_PPT.get(), KING_SEED_INTERVAL_TICKS.get(),
+            SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), UNSAFE_DEATH_TARGET_DECREMENT.get());
     }
 
     private static Snapshot defaults() {
@@ -208,7 +236,8 @@ public final class DynamicPopulationConfig {
             STEP_INTERVAL_TICKS.getDefault(), TRAVERSABLE_SAMPLE_SPACING.getDefault(),
             KING_UNIQUENESS_RADIUS_CELLS.getDefault(), KING_MIN_SKY_LIGHT.getDefault(),
             KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.getDefault(), KING_SEED_RADIUS_CELLS.getDefault(),
-            KING_SEED_RATE_PPT.getDefault(), KING_SEED_INTERVAL_TICKS.getDefault());
+            KING_SEED_RATE_PPT.getDefault(), KING_SEED_INTERVAL_TICKS.getDefault(),
+            SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), UNSAFE_DEATH_TARGET_DECREMENT.getDefault());
     }
 
     /**
