@@ -82,6 +82,7 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue DESPAWN_CAP_PER_INTERVAL;
     private static final ModConfigSpec.IntValue RECONCILIATION_INTERVAL_TICKS;
     private static final ModConfigSpec.IntValue UNSAFE_DEATH_TARGET_DECREMENT;
+    private static final ModConfigSpec.IntValue PROMOTION_EMERALD_COST;
 
     /** Smallest direction weight the config accepts: a zero weight would turn the weighted rule back into strict priority. */
     public static final double MIN_WEIGHT = 0.01;
@@ -92,7 +93,7 @@ public final class DynamicPopulationConfig {
             int kingSeedRadiusCells, int kingSeedRatePpt, int kingSeedIntervalTicks, int samplingHorizontalRadius,
             int samplingVerticalRadius, int fillagersPerFullCell, int reconciliationRefillPerInterval,
             int spawnCapPerInterval, int despawnCapPerInterval, int reconciliationIntervalTicks,
-            int unsafeDeathTargetDecrement) {
+            int unsafeDeathTargetDecrement, int promotionEmeraldCost) {
         public Snapshot {
             if (!(weightDown >= MIN_WEIGHT) || !(weightSides >= MIN_WEIGHT) || !(weightUp >= MIN_WEIGHT)) {
                 throw new IllegalArgumentException("propagation direction weights must be > 0");
@@ -201,6 +202,14 @@ public final class DynamicPopulationConfig {
         UNSAFE_DEATH_TARGET_DECREMENT = BUILDER.comment("Fillager reconciliation: ppt removed from only the local cell when a Fillager dies at an unsafe location (1..1000).")
             .defineInRange("fillager_unsafe_death_target_decrement", 25, 1, 1000);
 
+        PROMOTION_EMERALD_COST = BUILDER
+            .comment(
+                "Promotion economy: emeralds a player must give a Fillager to promote it to a normal, permanent "
+                    + "villager (1..64). The emeralds are consumed and the promoted villager leaves the live "
+                    + "population immediately, but this does NOT raise or lower the cell's target density -- the "
+                    + "felt population cost comes entirely from fillager_refill_per_interval's bounded refill rate.")
+            .defineInRange("fillager_promotion_emerald_cost", 1, 1, 64);
+
         SPEC = BUILDER.build();
     }
 
@@ -227,7 +236,7 @@ public final class DynamicPopulationConfig {
             SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get(),
             KING_UNIQUENESS_RADIUS_CELLS.get(), KING_MIN_SKY_LIGHT.get(), KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.get(),
             KING_SEED_RADIUS_CELLS.get(), KING_SEED_RATE_PPT.get(), KING_SEED_INTERVAL_TICKS.get(),
-            SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), UNSAFE_DEATH_TARGET_DECREMENT.get());
+            SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), UNSAFE_DEATH_TARGET_DECREMENT.get(), PROMOTION_EMERALD_COST.get());
     }
 
     private static Snapshot defaults() {
@@ -237,7 +246,7 @@ public final class DynamicPopulationConfig {
             KING_UNIQUENESS_RADIUS_CELLS.getDefault(), KING_MIN_SKY_LIGHT.getDefault(),
             KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.getDefault(), KING_SEED_RADIUS_CELLS.getDefault(),
             KING_SEED_RATE_PPT.getDefault(), KING_SEED_INTERVAL_TICKS.getDefault(),
-            SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), UNSAFE_DEATH_TARGET_DECREMENT.getDefault());
+            SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), UNSAFE_DEATH_TARGET_DECREMENT.getDefault(), PROMOTION_EMERALD_COST.getDefault());
     }
 
     /**
