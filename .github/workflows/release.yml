@@ -1,17 +1,40 @@
 name: Release
 
-# Path-gated: only a push to main that touches version.txt — the single
+# Path-gated: a push to main that touches version.txt — the single
 # source of truth for the shipped version (see build.gradle) — publishes.
 # Every other push to main (docs, CI tweaks, workflow edits, a source change
 # that hasn't been version-bumped yet) runs CI but does not cut a release.
 # This mirrors dynamic-atmosphere's release.yml, which gates on the same
 # file for the same reason: a version bump is the deliberate "ship this"
 # signal, not "any code changed".
+#
+# workflow_dispatch additionally accepts an explicit `version`/`notes`
+# pair, for a reviewed release whose version.txt/CHANGELOG.md haven't
+# been consolidated (release-gate v1 only gates branches; it has no
+# merge-time version/changelog assignment of its own -- see
+# scripts/release_publish.py's module docstring). Leave both blank to
+# fall back to version.txt/CHANGELOG.md, the push-trigger behaviour.
 on:
   push:
     branches: [main]
     paths: [version.txt]
   workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Explicit release version (e.g. 0.2.0-alpha.1), for a reviewed
+          release whose version.txt/CHANGELOG.md haven't been
+          consolidated yet (release-gate v1 is gate-only and never
+          assigns one -- see
+          https://github.com/brooswit-factory/release-gate/blob/v1/README.md).
+          Leave blank to fall back to version.txt, the push-trigger
+          behaviour.
+        required: false
+      notes:
+        description: >
+          Explicit, complete release notes for `version` above. Leave
+          blank to fall back to CHANGELOG.md's top entry.
+        required: false
 
 # Least privilege: only the `release` job needs contents:write, to create
 # the GitHub Release and upload its asset, via the automatic GITHUB_TOKEN.
@@ -39,12 +62,26 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      - name: Run script tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
       - name: Resolve version
         id: version
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
         run: |
-          version=$(cat version.txt)
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
-          echo "value=$version" >> "$GITHUB_OUTPUT"
+          value=$(python3 scripts/release_publish.py resolve-version "$DISPATCH_VERSION" version.txt)
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve notes
+        env:
+          DISPATCH_NOTES: ${{ github.event.inputs.notes }}
+        run: |
+          # A file, not $GITHUB_OUTPUT: release notes are multi-line and may
+          # contain characters $GITHUB_OUTPUT's delimiter escaping can't be
+          # trusted to round-trip safely.
+          printf '%s' "$DISPATCH_NOTES" > /tmp/dispatch-notes.md
+          python3 scripts/release_publish.py resolve-notes /tmp/dispatch-notes.md CHANGELOG.md > notes.md
 
       - name: Build and test
         env:
@@ -56,6 +93,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: python3 scripts/smoke-server.py "build/libs/dynamicpopulation-$VERSION.jar"
 
+      - name: Verify jar/tag/version agreement
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: python3 scripts/release_publish.py check-jar-version "build/libs/dynamicpopulation-$VERSION.jar" "$VERSION"
+
       - name: Publish immutable GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -63,13 +105,4 @@ jobs:
         run: |
           jar="build/libs/dynamicpopulation-$VERSION.jar"
           test -f "$jar"
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            # Idempotent on retry: a workflow re-run after the immutable
-            # release already exists must not rebuild or re-create it. Ship
-            # the original released artifact, never a later rebuild of the
-            # same version.
-            echo "Release v$VERSION already exists — skipping re-publish."
-          else
-            gh release create "v$VERSION" "$jar" --target "$GITHUB_SHA" \
-              --title "Dynamic Population $VERSION" --notes-file CHANGELOG.md --prerelease
-          fi
+          python3 scripts/release_publish.py publish "v$VERSION" "$GITHUB_SHA" "$jar" notes.md
