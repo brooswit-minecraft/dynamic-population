@@ -24,108 +24,147 @@ package io.github.brooswitminecraft.dynamicpopulation.combat;
  * included.</li>
  * </ol>
  *
- * <p><b>The fix:</b> stop re-deriving "why is this mob on fire" from scratch, with a short time window, on
- * every fresh-ignition tick. Instead, the FIRST tick of a continuous burn is the only tick that is ever
- * attributed to a cause; whatever that attribution decides (sun-caused, or externally caused) is LATCHED
- * for the mob and carried forward for every tick of that SAME continuous burn, however many further
- * redundant re-ignition jumps vanilla fires on top of it, until the fire actually goes out (remaining ticks
- * reach zero) and a genuinely new burn can start. A latched "externally caused" burn can never be clawed
- * back and reclassified later just because the short-lived evidence that justified it has expired -- the
- * caller ({@code SunImmunityTicking}) only needs to remember one boolean per mob, not a timestamp.
+ * <p><b>Round 5/6 fix (latch):</b> stop re-deriving "why is this mob on fire" from scratch, with a short time
+ * window, on every fresh-ignition tick. Instead, the FIRST tick of a continuous burn is the only tick that
+ * is ever attributed to a cause; whatever that attribution decides (sun-caused, or externally caused) is
+ * LATCHED for the mob and carried forward for every tick of that SAME continuous burn, until the fire
+ * actually goes out (remaining ticks reach zero) and a genuinely new burn can start. Round 6 also fixed the
+ * latch keying on {@code overrideActive} (a suppression-eligibility fact) instead of direct cause evidence
+ * -- see the history preserved in {@code SunImmunityTicking}'s own class doc.
  *
- * <p><b>Round 6 re-review fix:</b> the previous version of this latch conflated two DIFFERENT facts into
- * one boolean -- "was this burn caused by something other than the sun" (the burn's actual provenance,
- * decided once, at ignition) and "did {@code overrideActive} happen to be true at that exact moment" (an
- * unrelated fact about whether suppression was ELIGIBLE to apply right then). Keying the latch on the
- * latter meant an ordinary ignition that started while {@code overrideActive} was false -- for ANY reason,
- * including a genuinely sun-caused burn that started a tick before the density override activated -- got
- * permanently mislabeled "externally caused/protected" the instant {@code overrideActive} happened to be
- * false, and the latch then NEVER revisited that misclassification even after the override turned on and
- * the burn was still ongoing. The fix below decides {@code externallyCaused} from direct cause evidence
- * ({@code knownNonSunIgnitionCause}) ONLY, independent of {@code overrideActive}, and latches exactly that
- * fact; whether to actually clear the fire ({@code shouldSuppress}'s job) is then re-derived EVERY tick from
- * the current {@code sunEligible}/{@code overrideActive} inputs against that latched cause -- so a density
- * crossing (or a mob walking into an already-&gt;250 cell) mid-burn can correctly start or stop suppression
- * on the very next tick, without ever retroactively changing what actually caused the fire in the first
- * place. Those are two separate facts and are no longer conflated into one latch state.
+ * <p><b>Round 7 re-review fix (THIS version) -- the P1 finding the latch itself was still too blunt:</b>
+ * a latched "externally caused" burn was previously never suppressed again for its ENTIRE remaining
+ * duration, however long that turned out to be -- including every further tick where vanilla's OWN sun-burn
+ * mechanism kept independently re-rolling and topping the fire back up on top of the already-burning
+ * external fire (the very redundant-re-ignition behaviour the round-4/5 fix above was written to describe).
+ * A mob hit once by a torch and then left standing in direct sun in a &gt;250-density cell would therefore
+ * burn forever at full sun-stoked duration: the latch correctly remembered "this burn started externally"
+ * but then used that one bit to excuse EVERY subsequent tick's fire-tick value, including portions that
+ * were never part of the original external ignition at all.
+ *
+ * <p>The real fix: a boolean latch is the wrong shape for this problem. What must be tracked, for the
+ * entire life of an externally-caused burn, is a running estimate of how many fire ticks the ORIGINAL
+ * external cause would still have left if the sun mechanic were not repeatedly topping it up -- an
+ * "external budget" that decays by exactly as many ticks pass between observations (via {@code
+ * ticksElapsedSinceLastObservation}, supplied by the caller from real game time, not inferred from the fire
+ * -tick value itself, which is exactly the value the sun mechanic is corrupting) and is only ever RAISED by
+ * a genuine new direct-cause ignition event ({@code knownNonSunIgnitionCause} true on that tick). Whenever
+ * the mob's actual remaining fire ticks sit ABOVE that budget while no direct cause justifies it, the excess
+ * is attributed to vanilla's sun-roll topping the fire back up, and {@code SunImmunityTicking} is told to
+ * actively clamp the mob's remaining fire ticks back down to the budget -- countering specifically that
+ * top-up, tick by tick, rather than either leaving it in place (the round-6 bug) or clearing the fire
+ * entirely (which would also wrongly erase the legitimate external portion). The fire still burns out on
+ * its own natural external timeline; only the sun mechanic's repeated extensions on top of it are undone.
  */
 public final class FireIgnitionTracking {
     private FireIgnitionTracking() { }
 
     /**
      * @param freshIgnition whether THIS tick is the start of a new burn (or a redundant re-ignition on top
-     *     of a burn already in progress) -- {@code false} means "leave this mob's fire completely alone",
-     *     the same as the round-4 behaviour.
-     * @param clearFire whether {@code SunImmunityTicking} should call {@code mob.clearFire()} this tick.
-     * @param nextProtected the protected-burn latch value to remember for this mob going into the NEXT tick.
+     *     of a burn already in progress).
+     * @param clearFire whether {@code SunImmunityTicking} should call {@code mob.clearFire()} this tick --
+     *     ONLY for a burn whose cause is not (and never was) externally latched, i.e. a genuinely sun-caused
+     *     burn.
+     * @param clampFireTicks whether {@code SunImmunityTicking} should instead call {@code
+     *     mob.setRemainingFireTicks(fireTicksAfterAction)} this tick -- countering a sun-roll top-up landing
+     *     on top of an externally-caused burn without erasing the external portion. Mutually exclusive with
+     *     {@code clearFire}.
+     * @param fireTicksAfterAction the mob's remaining fire ticks once this tick's action (if any) is
+     *     applied -- 0 if {@code clearFire}, the external budget if {@code clampFireTicks}, otherwise
+     *     unchanged from {@code currentFireTicks}. This is exactly the value the caller must snapshot as
+     *     {@code previousFireTicks} for the next tick.
+     * @param nextProtected the externally-caused-burn latch value to remember for this mob going into the
+     *     NEXT tick.
+     * @param nextExternalBudgetTicks the external fire-tick budget to remember for this mob going into the
+     *     NEXT tick -- see this class's doc. Meaningless (and always 0) when {@code nextProtected} is false.
      */
-    public record Decision(boolean freshIgnition, boolean clearFire, boolean nextProtected) { }
+    public record Decision(boolean freshIgnition, boolean clearFire, boolean clampFireTicks,
+            int fireTicksAfterAction, boolean nextProtected, int nextExternalBudgetTicks) { }
 
     /**
      * @param currentFireTicks the mob's remaining fire ticks THIS tick ({@code Mob#getRemainingFireTicks()}).
      * @param previousFireTicks the same value from the previous tick this mob was observed, or {@code null}
      *     if never observed before (treated the same as "was not on fire"). The caller MUST ensure this
-     *     reflects the mob's ACTUAL remaining-fire-ticks value after the previous tick's own action (0 if
-     *     {@code clearFire()} was called that tick) -- see {@link #snapshotFireTicksAfterThisTick}.
+     *     reflects the mob's ACTUAL remaining-fire-ticks value after the previous tick's own action (the
+     *     previous {@code Decision#fireTicksAfterAction}), never the stale pre-action value.
      * @param previouslyProtected the externally-caused-burn latch carried over from the previous tick --
      *     {@code true} means THIS continuous burn was already determined, at its first tick, to have a
      *     known non-sun cause, and that fact is never revisited for the rest of this same burn.
+     * @param previousExternalBudgetTicks the external fire-tick budget carried over from the previous tick
+     *     (see this class's doc); ignored (treated as 0) when {@code previouslyProtected} is false.
+     * @param ticksElapsedSinceLastObservation real game ticks elapsed since this mob was last observed
+     *     (normally 1, every-tick observation; the caller derives it from actual game time, e.g. {@code
+     *     ServerLevel#getGameTime()}, NOT from any fire-tick delta, since the fire-tick value itself is what
+     *     the sun mechanic is busy corrupting). Clamped to a minimum of 0.
      * @param knownNonSunIgnitionCause whether a known non-sun ignition cause (fire/lava/soul-fire contact,
      *     a recent Flame-enchanted projectile hit, or a recent melee Fire Aspect hit) was observed THIS tick.
      * @param sunEligible vanilla's deterministic (non-random) sun-burn gate -- see {@code sunEligible} in
      *     {@code SunImmunityTicking}.
      * @param overrideActive whether the &gt;250-density light/sun override is active for this mob's faction
      *     right now. Deliberately NOT used to decide {@code externallyCaused} below -- see this class's
-     *     doc for why conflating the two was the round-5 bug.
+     *     doc for why conflating the two was the round-5/6 bug.
      */
     public static Decision decide(int currentFireTicks, Integer previousFireTicks, boolean previouslyProtected,
-            boolean knownNonSunIgnitionCause, boolean sunEligible, boolean overrideActive) {
+            int previousExternalBudgetTicks, long ticksElapsedSinceLastObservation, boolean knownNonSunIgnitionCause,
+            boolean sunEligible, boolean overrideActive) {
         if (currentFireTicks <= 0) {
-            // Fully extinguished: whatever burn was (or wasn't) externally caused is over. The NEXT
-            // ignition, of any origin, starts a completely fresh attribution -- this is what lets a later,
-            // truly independent sun ignition still be suppressed correctly after an earlier external burn
-            // has run its course.
-            return new Decision(false, false, false);
+            // Fully extinguished: whatever burn was (or wasn't) externally caused is over, and so is
+            // whatever was left of its external budget. The NEXT ignition, of any origin, starts a
+            // completely fresh attribution -- this is what lets a later, truly independent sun ignition
+            // still be suppressed correctly after an earlier external burn has run its course.
+            return new Decision(false, false, false, 0, false, 0);
         }
         boolean trueFirstIgnition = previousFireTicks == null || previousFireTicks <= 0;
         boolean freshIgnition = trueFirstIgnition || currentFireTicks > previousFireTicks;
 
         // externallyCaused is the mob's ACTUAL ignition provenance for this continuous burn -- decided from
-        // direct cause evidence ONLY, never from overrideActive (a completely separate fact about whether
-        // suppression is currently eligible, not about what caused the fire). It is decided once, at the
-        // burn's true first tick; a later redundant re-ignition jump on top of an ALREADY ongoing burn
-        // (vanilla's own repeated sun-roll landing on top of an externally-caused fire, the round-4 gap)
-        // does not get to re-derive the cause from scratch -- it can only LATCH IN new direct evidence
-        // (knownNonSunIgnitionCause true right now), never erase cause evidence already latched.
+        // direct cause evidence ONLY, never from overrideActive. It is decided once, at the burn's true
+        // first tick; a later redundant re-ignition jump on top of an ALREADY ongoing burn (vanilla's own
+        // repeated sun-roll landing on top of an externally-caused fire) does not get to re-derive the
+        // cause from scratch -- it can only LATCH IN new direct evidence, never erase cause evidence already
+        // latched.
         boolean externallyCaused = trueFirstIgnition
             ? knownNonSunIgnitionCause
             : (previouslyProtected || knownNonSunIgnitionCause);
 
-        // Suppression eligibility is a SEPARATE fact, re-derived EVERY tick (fresh or not) from the latched
-        // cause against the CURRENT sun/override conditions: the override turning on or off mid-burn (a
-        // density crossing, or the mob walking into/out of a >250 cell) changes whether suppression applies
-        // RIGHT NOW, but never retroactively changes what actually caused the fire. shouldSuppress's own
-        // "freshIgnitionThisTick" parameter is deliberately passed as a constant `true` here -- NOT this
-        // tick's actual freshIgnition -- because gating suppression on freshIgnition was exactly the
-        // round-4 mistake this class exists to move past: the CAUSE (externallyCaused) is what is only
-        // ever decided on a fresh/first tick, decided above; once that is known, whether to ACT on it this
-        // tick depends only on sunEligible/overrideActive right now, on every tick of the burn, fresh or
-        // decaying, not on whether this particular tick happens to be a fresh-ignition tick.
-        boolean clear = SunBurnSuppression.shouldSuppress(true, sunEligible, externallyCaused, overrideActive);
-        return new Decision(freshIgnition, clear, externallyCaused);
-    }
+        // The external fire-tick BUDGET (round-7 fix): how many fire ticks the original external cause
+        // would still have left if sun top-ups never happened. Not tracked at all for a burn that isn't
+        // (and never was) externally caused. Raised to the actual current value only on a tick where a
+        // genuine direct cause is observed (a real extension, not a sun top-up); otherwise it decays by
+        // exactly the real elapsed ticks since it was last computed -- never by the mob's own (possibly
+        // sun-corrupted) remaining-fire-ticks delta.
+        int externalBudgetTicks;
+        if (!externallyCaused) {
+            externalBudgetTicks = 0;
+        } else if (knownNonSunIgnitionCause) {
+            externalBudgetTicks = currentFireTicks;
+        } else {
+            long elapsed = Math.max(0, ticksElapsedSinceLastObservation);
+            externalBudgetTicks = (int) Math.max(0, previousExternalBudgetTicks - elapsed);
+        }
 
-    /**
-     * The remaining-fire-ticks value the caller must snapshot for comparison on the NEXT tick -- review fix
-     * P2, round 6. MUST reflect the mob's state AFTER this tick's own action, never the stale pre-clear
-     * value: if {@code decide}'s {@code clearFire} was honoured this tick, the mob's real remaining-fire-
-     * ticks is 0 going into the next tick, not whatever it was before the clear. Recording the pre-clear
-     * value instead meant an immediate same-duration re-ignition on the very next tick (e.g. cleared from
-     * 160, then re-ignited straight back to 160) compared {@code currentFireTicks(160) > previousFireTicks
-     * (160)} as false -- wrongly NOT a fresh ignition -- and the second, independent ignition silently
-     * inherited whatever latch state the first one left behind instead of ever being re-evaluated.
-     */
-    public static int snapshotFireTicksAfterThisTick(int currentFireTicksThisTick, boolean clearedThisTick) {
-        return clearedThisTick ? 0 : currentFireTicksThisTick;
+        // A sun top-up on top of an externally-caused burn: the mob is still latched as externally caused,
+        // THIS tick is not itself a new direct-cause event, yet the actual fire ticks sit above what the
+        // external budget alone would produce -- the only thing that can have added the difference is
+        // vanilla's own sun-burn mechanic re-igniting on top of the external fire.
+        boolean sunToppedUpExternalBurn = externallyCaused && !knownNonSunIgnitionCause
+            && currentFireTicks > externalBudgetTicks;
+
+        // Only actively counter that top-up while suppression is actually eligible right now (sunEligible/
+        // overrideActive) -- outside the override's scope, vanilla's own sun-burn behaviour is simply
+        // allowed to proceed unmodified, same as it always has been for a mob this mod isn't suppressing.
+        boolean clampFireTicks = sunToppedUpExternalBurn && overrideActive;
+
+        // A genuinely sun-caused burn (never externally latched) is still fully suppressed exactly as
+        // before -- shouldSuppress's own freshIgnitionThisTick parameter is deliberately passed as a
+        // constant `true`: the CAUSE is what is only ever decided on a fresh/first tick (above); once known,
+        // whether to ACT on it depends only on sunEligible/overrideActive right now, on every tick of the
+        // burn, not on whether this particular tick happens to be a fresh-ignition tick.
+        boolean clearFire = SunBurnSuppression.shouldSuppress(true, sunEligible, externallyCaused, overrideActive);
+
+        int fireTicksAfterAction = clearFire ? 0 : clampFireTicks ? externalBudgetTicks : currentFireTicks;
+
+        return new Decision(freshIgnition, clearFire, clampFireTicks, fireTicksAfterAction, externallyCaused,
+            externalBudgetTicks);
     }
 }

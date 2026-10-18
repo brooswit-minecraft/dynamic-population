@@ -80,9 +80,22 @@ import net.neoforged.neoforge.event.tick.EntityTickEvent;
  * class's doc for the full reasoning.</li>
  * <li>{@link #LAST_FIRE_TICKS} was snapshotted BEFORE {@code mob.clearFire()} was called, so an immediate
  * same-duration re-ignition on the very next tick compared against the stale pre-clear value and escaped
- * fresh-ignition detection entirely. Fixed by snapshotting {@link FireIgnitionTracking#snapshotFireTicksAfterThisTick}
- * AFTER this method has already acted on the current tick's decision.</li>
+ * fresh-ignition detection entirely. Fixed by snapshotting it AFTER this method has already acted on the
+ * current tick's decision, using {@code Decision#fireTicksAfterAction} directly.</li>
  * </ol>
+ *
+ * <p><b>Round 7 re-review fix:</b> the boolean latch itself ({@link #PROTECTED_BURN}) was still the wrong
+ * shape -- once a burn was latched "externally caused", it was never suppressed again for its entire
+ * remaining duration, so a mob hit once by a torch and then left standing in direct sun in a &gt;250-density
+ * cell would burn forever: vanilla's own sun-burn mechanic kept independently re-rolling and topping the
+ * fire back up on top of the already-burning external fire, and the latch excused every one of those
+ * top-ups indefinitely. {@link #EXTERNAL_BUDGET_TICKS} (paired with {@link #LAST_OBSERVED_GAME_TICK} to
+ * measure real elapsed ticks) now tracks, for the life of an externally-caused burn, how many fire ticks
+ * the ORIGINAL external cause would still have left absent any sun top-ups; whenever the mob's actual
+ * remaining fire ticks sit above that budget with no fresh direct cause to justify it, this class actively
+ * clamps them back down via {@code Mob#setRemainingFireTicks} -- undoing specifically the sun mechanic's
+ * repeated extensions, tick by tick, while leaving the legitimate external portion of the burn (and its own
+ * natural decay to zero) untouched. See {@link FireIgnitionTracking}'s class doc for the full reasoning.
  *
  * <p><b>Remaining honestly-scoped gap:</b> this positively rules out the ignition paths this mod knows about
  * (fire/soul-fire/lava contact, Flame-enchanted projectiles, melee Fire Aspect); it cannot rule out a MODDED
@@ -104,6 +117,19 @@ public final class SunImmunityTicking {
      * caused -- see {@link FireIgnitionTracking}. Cleared once the mob's fire actually goes out.
      */
     private static final Map<Mob, Boolean> PROTECTED_BURN = new WeakHashMap<>();
+
+    /**
+     * The external fire-tick budget latch (round 7) -- see this class's doc and {@link FireIgnitionTracking}.
+     * Only meaningful while {@link #PROTECTED_BURN} is true for the mob; cleared alongside it.
+     */
+    private static final Map<Mob, Integer> EXTERNAL_BUDGET_TICKS = new WeakHashMap<>();
+
+    /**
+     * The real game tick this mob was last observed on -- used to compute {@code
+     * ticksElapsedSinceLastObservation} for {@link FireIgnitionTracking#decide}. Deliberately real game
+     * time, not anything derived from the mob's own (possibly sun-corrupted) remaining-fire-ticks value.
+     */
+    private static final Map<Mob, Long> LAST_OBSERVED_GAME_TICK = new WeakHashMap<>();
 
     /**
      * Mobs a Flame-enchanted (self-on-fire) projectile JUST hit, valid for a small number of ticks --
@@ -225,12 +251,18 @@ public final class SunImmunityTicking {
         }
         int currentFireTicks = mob.getRemainingFireTicks();
         // Review fix (P2, round 6): PEEK the previous snapshot here, do NOT overwrite it yet -- the value
-        // stored for the NEXT tick must reflect what happens THIS tick (including a clearFire() call
-        // below), not this tick's pre-clear currentFireTicks. See FireIgnitionTracking.
-        // snapshotFireTicksAfterThisTick's doc for why recording it before the clear let an immediate
-        // same-duration re-ignition on the very next tick escape fresh-ignition detection entirely.
+        // stored for the NEXT tick must reflect what happens THIS tick (including a clearFire()/
+        // setRemainingFireTicks() call below), not this tick's pre-action currentFireTicks.
         Integer previousFireTicks = LAST_FIRE_TICKS.get(mob);
         boolean previouslyProtected = Boolean.TRUE.equals(PROTECTED_BURN.get(mob));
+        int previousExternalBudgetTicks = EXTERNAL_BUDGET_TICKS.getOrDefault(mob, 0);
+        long gameTime = level.getGameTime();
+        Long lastObservedGameTick = LAST_OBSERVED_GAME_TICK.get(mob);
+        // Real elapsed ticks since this mob was last observed -- normally 1 (every-tick observation).
+        // Deliberately derived from game time, never from the fire-tick value itself, which is exactly what
+        // vanilla's own sun-roll top-ups corrupt. Defaults to 1 on first observation of a mob (no prior
+        // reference point).
+        long ticksElapsed = lastObservedGameTick == null ? 1L : Math.max(0L, gameTime - lastObservedGameTick);
         boolean knownNonSunCause = touchingFireOrLava(level, mob) || recentFlameHit(level, mob) || recentMeleeFireAspectHit(level, mob);
 
         LevelField field = PopulationSimulation.field(level, faction);
@@ -238,20 +270,30 @@ public final class SunImmunityTicking {
         boolean overrideActive = EnvironmentalOverride.active(density);
 
         FireIgnitionTracking.Decision decision = FireIgnitionTracking.decide(currentFireTicks, previousFireTicks,
-            previouslyProtected, knownNonSunCause, sunEligible(level, mob), overrideActive);
+            previouslyProtected, previousExternalBudgetTicks, ticksElapsed, knownNonSunCause, sunEligible(level, mob),
+            overrideActive);
 
         if (decision.nextProtected()) {
             PROTECTED_BURN.put(mob, Boolean.TRUE);
+            EXTERNAL_BUDGET_TICKS.put(mob, decision.nextExternalBudgetTicks());
         } else {
             PROTECTED_BURN.remove(mob);
+            EXTERNAL_BUDGET_TICKS.remove(mob);
         }
         if (decision.clearFire()) {
             mob.clearFire();
+        } else if (decision.clampFireTicks()) {
+            // Round 7 re-review fix: counter specifically a sun-roll top-up landing on top of an
+            // externally-caused burn by clamping remaining fire ticks back down to what the ORIGINAL
+            // external cause's own natural decay would have produced by now -- not a full clearFire(),
+            // which would also wrongly erase the legitimate external portion of the burn.
+            mob.setRemainingFireTicks(decision.fireTicksAfterAction());
         }
         // Review fix (P2, round 6): record the snapshot for the NEXT tick AFTER acting on this tick's
-        // decision, using the mob's ACTUAL post-action remaining-fire-ticks (0 if clearFire() was just
-        // called), never the pre-clear currentFireTicks captured at the top of this method.
-        LAST_FIRE_TICKS.put(mob, FireIgnitionTracking.snapshotFireTicksAfterThisTick(currentFireTicks, decision.clearFire()));
+        // decision, using the mob's ACTUAL post-action remaining-fire-ticks, never the pre-action
+        // currentFireTicks captured at the top of this method.
+        LAST_FIRE_TICKS.put(mob, decision.fireTicksAfterAction());
+        LAST_OBSERVED_GAME_TICK.put(mob, gameTime);
     }
 
     private static boolean isKing(Entity entity) {

@@ -529,16 +529,44 @@ def boot(root):
         # radius, which left its own local override inactive. That is a legitimate, unrelated death this
         # check must not let happen at all, since finding #2's fix (below) treats a missing/unreadable
         # health sample as a hard failure -- exactly what an incidental environmental death would produce.
+        # Review fix (P2, round 7, finding #1 -- the log-draining race): the previous version of this loop
+        # assembled its own `captured = refresh_density(...) + drain_for(1.5)` buffer and fed THAT to
+        # extract_combat_hits. That buffer only ever reflects what those two SPECIFIC calls happened to
+        # consume from the shared `lines` queue -- any DPOP_COMBAT_HIT line landing while some OTHER part
+        # of the harness was separately draining the SAME queue (most notably query_health_unambiguous's
+        # own internal ~0.5s drain_for, called immediately below, and used throughout this whole script) was
+        # silently pulled off the queue by that OTHER drain call and never reached extract_combat_hits at
+        # all -- a disqualifying hit could occur and simply never be recorded, letting this check pass for
+        # the wrong reason. `seen` (populated in boot()'s own read_output thread) is never subject to that
+        # race: every line the server ever prints lands in it, unconditionally, in order, the instant it is
+        # read, BEFORE any consumer-side drain/query call gets a chance to claim it from `lines`. Scanning
+        # the slice of `seen` accumulated since the last cycle -- not a per-call buffer assembled from
+        # whichever drains happened to run -- is a single continuous collection with no window where a line
+        # can be dropped on the floor.
         hits_after_mark = 0
         health_missing = False
+        attacker_missing = False
+        hit_scan_index = len(seen)
         for _ in range(10):
             for tag in ("dpop_attacker_check_villager", "dpop_attacker_check_zombie"):
                 process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set villager 1000\n')
                 process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set zombie 1000\n')
-            captured = refresh_density(attacker_pos)
-            captured += drain_for(1.5)
+            refresh_density(attacker_pos)
+            drain_for(1.5)
             health = query_health_unambiguous("dpop_attacker_check_zombie", "Zombie")
-            for attacker_tags in extract_combat_hits(captured, "dpop_attacker_check_zombie"):
+            # Review fix (P2, round 7, finding #2): explicitly confirm the PersistenceRequired attacker
+            # itself is still alive/queryable, independent of the hit count. CI has repeatedly shown the
+            # attacker taking reciprocal damage (the zombie's own counter-attack lands on it even while it
+            # is itself excluded from INITIATING combat) -- that is expected and must not fail this check.
+            # But if the attacker becomes unqueryable for ANY reason (died, despawned), "zero hits were
+            # logged against it" and "the persistence guard stopped it from ever attacking" become
+            # indistinguishable from "it simply was not there to attack anything" -- that ambiguity is
+            # exactly the same shape as finding #2's existing health_missing guard below for the target, and
+            # must be an equally hard failure, not a silent pass.
+            attacker_health = query_health_unambiguous("dpop_attacker_check_villager", "entity.dynamicpopulation.fillager")
+            new_lines = seen[hit_scan_index:]
+            hit_scan_index = len(seen)
+            for attacker_tags in extract_combat_hits(new_lines, "dpop_attacker_check_zombie"):
                 if "dpop_attacker_check_villager" in attacker_tags:
                     hits_after_mark += 1
                     print(
@@ -548,6 +576,9 @@ def boot(root):
                     )
             if hits_after_mark > 0:
                 break
+            if attacker_health is None:
+                attacker_missing = True
+                break
             # Review fix (P2, round 6, finding #2): a missing/unreadable health sample must be a hard
             # failure, never a silent pass -- the previous version of this check's loop simply `break`-ed
             # out here, leaving its pass/fail flag at its default "stopped" value and printing PASSED
@@ -555,6 +586,13 @@ def boot(root):
             if health is None:
                 health_missing = True
                 break
+        if attacker_missing:
+            raise RuntimeError(
+                "Attacker persistence check FAILED: could not read the PersistenceRequired attacker's own "
+                "health during the wait window (missing/unreadable data, i.e. it died or despawned for an "
+                "unrelated reason) -- without this, 'zero hits were attributed to it' is indistinguishable "
+                "from 'it was never there to land one', so this must be a hard failure, not a silent pass."
+            )
         if health_missing:
             raise RuntimeError(
                 "Attacker persistence check FAILED: could not read the target's health during the wait "
@@ -573,7 +611,11 @@ def boot(root):
             "being given a target (density kept >=500 throughout, at both the fixed starting point and "
             "the attacker's own current position, so the persistence check is the ONLY thing that could "
             "have stopped it) never landed a single hit on an adjacent, always-eligible opposing-faction "
-            "target.", flush=True,
+            "target, scanning the server's COMPLETE, never-dropped output end to end (not a locally-"
+            "assembled buffer vulnerable to a drain-window race) -- AND the PersistenceRequired attacker "
+            "itself was confirmed alive and queryable at every sampled cycle throughout, so this result is "
+            "specifically attributable to attackerEligible()'s isPersistenceRequired() guard, not to the "
+            "attacker having died or become unavailable for an unrelated reason.", flush=True,
         )
 
         process.stdin.write("stop\n")
