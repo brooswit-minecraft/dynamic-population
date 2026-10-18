@@ -1,7 +1,7 @@
 package io.github.brooswitminecraft.dynamicpopulation.propagation;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfigTestSupport;
 import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerReconciliation;
-import net.minecraft.world.entity.MobSpawnType;
 
 class VillageActivityFeedbackTest {
     private static final CellKey ORIGIN = new CellKey(0, 0, 0);
@@ -29,16 +28,40 @@ class VillageActivityFeedbackTest {
         DynamicPopulationConfigTestSupport.reload("village_destruction_target_decrement", 15);
     }
 
-    /**
-     * The exact reason BabyEntitySpawnEvent / a bare loadedFromDisk+isBaby gate were rejected: a spawn egg
-     * on an adult villager and a cured zombie villager must never read as MobSpawnType.BREEDING.
-     */
+    // isConfirmedBreedingBirth is the pure half of the two-event (FinalizeSpawnEvent marks,
+    // EntityJoinLevelEvent confirms-and-consumes) birth tracking onBreeding/onFinalizeSpawn use in
+    // production -- this is what makes onBreeding read the CORRECT, post-moveTo position from the join
+    // event rather than FinalizeSpawnEvent's own (always world-origin) coordinates, which the first version
+    // of this fix got wrong. Generic over T so it is testable without a real Villager/Minecraft bootstrap.
+
     @Test
-    void breedingSpawnTypeIsDistinctFromEveryOtherWayAVillagerCanAppear() {
-        assertNotEquals(MobSpawnType.BREEDING, MobSpawnType.SPAWN_EGG);
-        assertNotEquals(MobSpawnType.BREEDING, MobSpawnType.CONVERSION);
-        assertNotEquals(MobSpawnType.BREEDING, MobSpawnType.MOB_SUMMONED);
-        assertNotEquals(MobSpawnType.BREEDING, MobSpawnType.NATURAL);
+    void aVillagerFlaggedAtFinalizeSpawnTimeIsConfirmedExactlyOnceAtJoinTime() {
+        Set<Object> pending = new HashSet<>();
+        Object villager = new Object();
+        pending.add(villager); // what onFinalizeSpawn does on a MobSpawnType.BREEDING Villager.
+
+        assertTrue(VillageActivityFeedback.isConfirmedBreedingBirth(pending, villager),
+            "a villager finalized with BREEDING must be confirmed once it joins the level");
+        assertFalse(VillageActivityFeedback.isConfirmedBreedingBirth(pending, villager),
+            "the same entity must never be confirmed a second time");
+    }
+
+    @Test
+    void aVillagerThatJoinsWithoutEverBeingFlaggedIsNotConfirmed() {
+        assertFalse(VillageActivityFeedback.isConfirmedBreedingBirth(new HashSet<>(), new Object()),
+            "an ordinary villager join (not preceded by a MobSpawnType.BREEDING finalize) must not raise anything");
+    }
+
+    @Test
+    void flaggingOneVillagerNeverConfirmsADifferentOne() {
+        Set<Object> pending = new HashSet<>();
+        Object flagged = new Object();
+        Object other = new Object();
+        pending.add(flagged);
+
+        assertFalse(VillageActivityFeedback.isConfirmedBreedingBirth(pending, other));
+        assertTrue(VillageActivityFeedback.isConfirmedBreedingBirth(pending, flagged),
+            "the actually-flagged entity must remain confirmable after an unrelated lookup");
     }
 
     // Each of these drives VillageActivityFeedback.raise -- the exact adapter every raise event hook

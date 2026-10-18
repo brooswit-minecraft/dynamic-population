@@ -1,7 +1,9 @@
 package io.github.brooswitminecraft.dynamicpopulation.propagation;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.ToIntFunction;
@@ -72,35 +74,74 @@ public final class VillageActivityFeedback {
     }
 
     /**
-     * Breeding (AC6): a Villager being spawned with {@link MobSpawnType#BREEDING}.
+     * Breeding (AC6): a Villager produced via {@code Villager.getBreedOffspring} -- the shared factory both
+     * {@code VillagerMakeLove} (two parent villagers breeding) and {@code SpawnEggItem.spawnOffspringFromSpawnEgg}
+     * (a player using a villager spawn egg on an existing villager) call, both tagging the child
+     * {@code MobSpawnType.BREEDING} via {@code finalizeSpawn}. This IS the detection signal below, and
+     * also its one known, deliberate imprecision -- see {@link #BREEDING_SPAWNS}'s javadoc.
      *
-     * <p>Two rejected approaches, in order, and why:
+     * <p>Rejected approaches, in order, and why:
      * <ul>
      * <li>{@code BabyEntitySpawnEvent} -- per NeoForge's own Javadoc it is fired only from
-     * {@code Animal.spawnChildFromBreeding}/{@code Fox.spawnChildFromBreeding}; the vanilla
-     * {@code VillagerMakeLove} behavior normal villagers breed through has no such hook in NeoForge's
-     * 1.21.1 patch set, so it never fires for ordinary village breeding at all.</li>
+     * {@code Animal.spawnChildFromBreeding}/{@code Fox.spawnChildFromBreeding}; {@code VillagerMakeLove}
+     * has no such hook in NeoForge's 1.21.1 patch set, so it never fires for village breeding at all.</li>
      * <li>{@code EntityJoinLevelEvent} filtered to a baby, non-disk-loaded {@code Villager} -- that flag
      * only distinguishes a disk load from {@code PersistentEntitySectionManager.addNewEntity}, which also
-     * runs for a baby created any other way (a spawn egg used on an adult villager produces exactly the
-     * same {@code (loadedFromDisk=false, isBaby=true)} shape with no breeding at all).</li>
+     * runs for the spawn-egg case above, so it is no narrower a signal than {@code MobSpawnType.BREEDING}
+     * itself, while ALSO discarding the one thing {@link FinalizeSpawnEvent} gets right: timing.</li>
+     * <li>Raising directly inside {@link #onFinalizeSpawn} (the first version of this fix) -- confirmed
+     * wrong by static inspection of vanilla bytecode/sources: {@code getBreedOffspring} calls
+     * {@code finalizeSpawn} on the child at its just-constructed position (the world origin), and only
+     * the CALLER ({@code VillagerMakeLove.breed}/{@code SpawnEggItem.spawnOffspringFromSpawnEgg}) calls
+     * {@code moveTo} the real birth location afterward, before {@code addFreshEntityWithPassengers}. So
+     * {@link FinalizeSpawnEvent}'s own coordinates are never the birth location -- only
+     * {@link EntityJoinLevelEvent}'s position (read after that {@code moveTo}) is.</li>
      * </ul>
-     *
-     * <p>{@code VillagerMakeLove.breed} calls {@code Villager.getBreedOffspring}, which calls
-     * {@code finalizeSpawn(level, difficulty, MobSpawnType.BREEDING, null)} on the child before it ever
-     * joins the level -- NeoForge fires {@link FinalizeSpawnEvent} immediately before that vanilla call,
-     * exposing the exact {@link MobSpawnType} that caused the spawn as a genuine, one-time, per-entity
-     * signal (never reused for a spawn egg, which uses {@code MobSpawnType.SPAWN_EGG}, or a cured zombie
-     * villager, which uses {@code MobSpawnType.CONVERSION}).
      */
     @SubscribeEvent
-    public static void onBreeding(FinalizeSpawnEvent event) {
-        if (!(event.getEntity() instanceof Villager) || event.getSpawnType() != MobSpawnType.BREEDING
+    public static void onFinalizeSpawn(FinalizeSpawnEvent event) {
+        if (event.getEntity() instanceof Villager villager && event.getSpawnType() == MobSpawnType.BREEDING) {
+            BREEDING_SPAWNS.add(villager);
+        }
+    }
+
+    /**
+     * No accessible NeoForge/vanilla event distinguishes two villagers actually breeding from a player using
+     * a spawn egg on an existing villager -- Mojang's own vanilla code (see {@link #onFinalizeSpawn}'s
+     * javadoc) deliberately routes both through the identical {@code getBreedOffspring} factory with the
+     * identical {@code MobSpawnType.BREEDING} tag, and that choice is made purely by the CALLER with no
+     * observable difference left on the resulting event/entity. Per this ticket's own instruction to wire
+     * what has an accessible event and document what can't be disambiguated further: this hook therefore
+     * also raises the target for the spawn-egg case, the same way {@link #onGolemCreation} already counts
+     * a player-built golem the same as a villager-built one -- "a villager was added to the population via
+     * the breeding mechanism" is treated as the positive signal, not "two villagers independently decided
+     * to mate."
+     *
+     * <p>{@link #BREEDING_SPAWNS} is a {@code Set} backed by a {@link WeakHashMap} (no public weak-hash-set
+     * exists), keyed by entity identity: an entry a cancelled/never-joining spawn leaves behind is simply
+     * never removed by {@link #remove}, but becomes collectible the moment nothing else holds the entity,
+     * so it never leaks memory -- it is a one-shot marker, not a registry.
+     */
+    private static final Set<Villager> BREEDING_SPAWNS = Collections.newSetFromMap(new WeakHashMap<>());
+
+    @SubscribeEvent
+    public static void onBreeding(EntityJoinLevelEvent event) {
+        if (!(event.getEntity() instanceof Villager villager) || !isConfirmedBreedingBirth(BREEDING_SPAWNS, villager)
                 || !(event.getLevel() instanceof ServerLevel level) || !overworld(level)) {
             return;
         }
-        raise(level, BlockPos.containing(event.getX(), event.getY(), event.getZ()),
-            DynamicPopulationConfig.get().villageBreedingTargetIncrement());
+        raise(level, villager.blockPosition(), DynamicPopulationConfig.get().villageBreedingTargetIncrement());
+    }
+
+    /**
+     * The pure, unit-tested half of the two-event breeding-birth tracking: marking happens in
+     * {@link #onFinalizeSpawn} ({@code pending.add}, not shown here since {@link Set#add} needs no
+     * wrapper), confirming (and consuming, so a later unrelated join of the same entity -- impossible in
+     * practice, but not relied upon -- can never confirm twice) happens here, at
+     * {@link #onBreeding}'s join-time call site, generic so it is testable without any Minecraft type.
+     */
+    static <T> boolean isConfirmedBreedingBirth(Set<T> pendingBreedingSpawns, T entity) {
+        return pendingBreedingSpawns.remove(entity);
     }
 
     /** Building (AC6): any block a player places. */

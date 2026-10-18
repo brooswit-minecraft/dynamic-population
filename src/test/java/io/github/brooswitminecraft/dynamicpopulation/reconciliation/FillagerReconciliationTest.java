@@ -160,6 +160,20 @@ class FillagerReconciliationTest {
     }
 
     @Test
+    void promotionLeavesATemporaryGapBoundedByTheRefillRate() {
+        // A cell at full target (8 residents for an 8-per-full-cell, CAPACITY-density cell); one promotion
+        // (Fillager.convertTo, outside this pure helper) drops the live count to 7 without touching the
+        // target, so decide() alone must observe the gap and refill at most refillLimit=1 per interval --
+        // not snap straight back to 8 on the very next tick.
+        var params = new FillagerReconciliation.Params(0, 0, 8, 1, 2, 2);
+        var reader = (java.util.function.ToIntFunction<CellKey>) cell -> 1000;
+        var decision = FillagerReconciliation.decide(ORIGIN, 7, params, NO_LAYER_BOUND_LOW, NO_LAYER_BOUND_HIGH,
+            ALWAYS_READABLE, reader);
+        assertEquals(8, decision.desired(), "promotion must not have changed the target the decision samples");
+        assertEquals(1, decision.spawn(), "refill after a promotion must be bounded by the configured refill rate");
+    }
+
+    @Test
     void unsafeDeathOnlyChangesItsSingleLocalTarget() {
         Map<CellKey, Integer> storage = new HashMap<>();
         CellKey neighbour = ORIGIN.offset(1, 0, 0);
