@@ -135,12 +135,24 @@ public final class FillagerPopulationSimulation {
      * {@link #isUnsafeDeathTypePath} is the pure, unit-tested half of this; it never receives storage.
      */
     private static boolean isUnsafeDeath(Fillager fillager, net.minecraft.world.damagesource.DamageSource source) {
-        if (fillager.wasUnsafeLocationDeath()) {
+        boolean hasAttacker = source.getEntity() != null;
+        String damageTypePath = source.typeHolder().unwrapKey().map(key -> key.location().getPath()).orElse("");
+        return isUnsafeDeath(fillager.wasUnsafeLocationDeath(), hasAttacker, damageTypePath);
+    }
+
+    /**
+     * The pure, unit-tested half of {@link #isUnsafeDeath}: no Minecraft registry or entity needed to test
+     * this. {@code locationUnsafe && !hasAttacker} is required, not {@code locationUnsafe} alone: wither
+     * rose is a hazard the Fillager can survive, so a player/mob kill landing while it happens to be
+     * standing on one must not count -- genuine location hazards never have an attacking entity (lava/fire's
+     * self-kill uses {@code damageSources().generic()}; the wither-rose kill arrives as the Wither effect's
+     * own source), while a player, mob, or projectile kill always does.
+     */
+    static boolean isUnsafeDeath(boolean locationUnsafe, boolean hasAttacker, String damageTypePath) {
+        if (locationUnsafe && !hasAttacker) {
             return true;
         }
-        return source.typeHolder().unwrapKey()
-            .map(key -> isUnsafeDeathTypePath(key.location().getPath()))
-            .orElse(false);
+        return isUnsafeDeathTypePath(damageTypePath);
     }
 
     /** The registry-key path half of {@link #isUnsafeDeath}: no Minecraft registry needed to unit test this. */
@@ -148,9 +160,13 @@ public final class FillagerPopulationSimulation {
         return UNSAFE_DEATH_TYPE_PATHS.contains(damageTypePath);
     }
 
-    // Wither rose is deliberately NOT here: it is classified by location in Fillager.aiStep (see
-    // wasUnsafeLocationDeath) instead, because DamageTypes.WITHER cannot distinguish "stood on a wither
-    // rose" from "a wither skeleton or the Wither boss killed this mob".
+    // Wither rose and on-fire are deliberately NOT here. Wither rose is classified by location in
+    // Fillager.aiStep (see wasUnsafeLocationDeath) instead, because DamageTypes.WITHER cannot distinguish
+    // "stood on a wither rose" from "a wither skeleton or the Wither boss killed this mob". "on_fire" is the
+    // burning status damage-over-time tick, dealt regardless of what ignited the Fillager (a Flame bow,
+    // Fire Aspect, a blaze/ghast fireball, lightning) -- not a location at all; the location causes of
+    // burning (lava, fire, soul fire) are already covered by wasUnsafeLocationDeath, which kills the
+    // Fillager the same tick via Fillager.isLethalHazard before any on_fire damage-over-time tick can fire.
     private static final Set<String> UNSAFE_DEATH_TYPE_PATHS = Set.of(
-        "lava", "in_fire", "on_fire", "hot_floor", "campfire", "cactus", "sweet_berry_bush", "drown", "in_wall");
+        "lava", "in_fire", "hot_floor", "campfire", "cactus", "sweet_berry_bush", "drown", "in_wall");
 }
