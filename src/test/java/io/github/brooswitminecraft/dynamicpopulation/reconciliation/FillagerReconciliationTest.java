@@ -1,6 +1,7 @@
 package io.github.brooswitminecraft.dynamicpopulation.reconciliation;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.util.HashMap;
@@ -252,5 +253,46 @@ class FillagerReconciliationTest {
         assertEquals(70, storage.get(ORIGIN));
         assertEquals(70, storage.get(second));
         assertEquals(100, storage.get(untouched), "a cell an explosion never touched must be left alone");
+    }
+
+    @Test
+    void raisingAnInitiallyEmptyCellEnrollsItInTheActiveSet() {
+        // The actual production join point VillageActivityFeedback.raise calls: without this, a cell with
+        // no existing Fillagers and outside King-seeding range would have its stored target raised but stay
+        // invisible to propagation (which only steps the active set) and reconciliation (active set plus
+        // cells containing existing Fillagers) until some unrelated event happened to add it.
+        Map<CellKey, Integer> storage = new HashMap<>();
+        storage.put(ORIGIN, 0);
+        Set<CellKey> active = new java.util.HashSet<>();
+
+        FillagerReconciliation.raiseLocalTargetAndActivate(ORIGIN, 10, storage::get, storage::put, active::add);
+
+        assertEquals(10, storage.get(ORIGIN));
+        assertTrue(active.contains(ORIGIN), "a raise that makes the stored target positive must enroll the cell in the active set");
+    }
+
+    @Test
+    void raisingACellThatStaysAtOrBelowZeroDoesNotEnrollIt() {
+        Map<CellKey, Integer> storage = new HashMap<>();
+        storage.put(ORIGIN, 0);
+        Set<CellKey> active = new java.util.HashSet<>();
+
+        // A 0 config weight is possible (the min range is 1, but defensively: any non-positive outcome).
+        FillagerReconciliation.raiseLocalTargetAndActivate(ORIGIN, 0, storage::get, storage::put, active::add);
+
+        assertEquals(0, storage.get(ORIGIN));
+        assertTrue(active.isEmpty(), "a raise that leaves the cell at zero must not mark it active");
+    }
+
+    @Test
+    void raisingAnAlreadyActiveCellIsUnaffected() {
+        Map<CellKey, Integer> storage = new HashMap<>();
+        storage.put(ORIGIN, 50);
+        Set<CellKey> active = new java.util.HashSet<>(Set.of(ORIGIN));
+
+        FillagerReconciliation.raiseLocalTargetAndActivate(ORIGIN, 10, storage::get, storage::put, active::add);
+
+        assertEquals(60, storage.get(ORIGIN));
+        assertEquals(Set.of(ORIGIN), active);
     }
 }

@@ -119,4 +119,21 @@ public final class FillagerReconciliation {
             adjustLocalTarget(cell, -decrement, read, write);
         }
     }
+
+    /**
+     * AC6 raise, PLUS the post-write registration a raise needs that a lower never does: a cell with no
+     * existing Fillagers and outside King-seeding range is otherwise invisible to both propagation (which
+     * only steps the active set) and reconciliation (active set plus cells containing existing Fillagers),
+     * so a raise that actually makes the stored target positive must also enroll the cell in the active
+     * set -- exactly as {@code KingSimulation.seedAll} already does after King seeding. {@code markActive}
+     * is called only when the write resulted in a positive value, never for a raise that a later lower
+     * (same event, or a config of 0) leaves at/below zero.
+     */
+    public static void raiseLocalTargetAndActivate(CellKey localCell, int increment, ToIntFunction<CellKey> read,
+            BiConsumer<CellKey, Integer> write, java.util.function.Consumer<CellKey> markActive) {
+        adjustLocalTarget(localCell, increment, read, write);
+        if (read.applyAsInt(localCell) > 0) {
+            markActive.accept(localCell);
+        }
+    }
 }
