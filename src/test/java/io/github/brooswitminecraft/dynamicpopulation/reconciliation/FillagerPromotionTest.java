@@ -53,6 +53,17 @@ class FillagerPromotionTest {
     }
 
     @Test
+    void onlyTheServerEverEvaluatesEligibility() {
+        // The review-flagged live-cost-divergence scenario: NeoForge's config sync is connection-time only,
+        // so a server-side live reload of the promotion cost after a client has joined can leave that
+        // client's cached cost stale. The client must therefore NEVER evaluate canPromote itself -- not
+        // "evaluate it using some safer value," but skip the evaluation entirely -- so every hand attempt
+        // always reaches the server, which alone holds the authoritative cost.
+        assertFalse(FillagerPromotion.shouldEvaluateOnThisSide(false), "the client must always defer");
+        assertTrue(FillagerPromotion.shouldEvaluateOnThisSide(true), "only the server evaluates eligibility");
+    }
+
+    @Test
     void defaultCostIsOneEmerald() {
         DynamicPopulationConfigTestSupport.load();
         assertTrue(1 == DynamicPopulationConfig.get().promotionEmeraldCost(),

@@ -19,4 +19,17 @@ public final class FillagerPromotion {
     public static boolean canPromote(boolean isEmerald, int heldCount, int cost) {
         return isEmerald && heldCount >= cost;
     }
+
+    /**
+     * Whether THIS side of {@code Fillager.mobInteract} is allowed to evaluate {@link #canPromote} at all,
+     * as opposed to always deferring (PASS) immediately. Only the server may: NeoForge's automatic config
+     * sync is connection-time only, so a later live reload of the promotion cost can leave an
+     * already-connected client holding a stale value in either direction. If the client ever used its own
+     * (possibly stale) cost to decide a hand "already succeeded," it could end Minecraft's main-hand/
+     * off-hand fallback on the wrong hand -- the one true fix in this method's own history (review on PR
+     * #11) -- so this is {@code false} unconditionally for the client, never based on any cost comparison.
+     */
+    public static boolean shouldEvaluateOnThisSide(boolean isServerSide) {
+        return isServerSide;
+    }
 }

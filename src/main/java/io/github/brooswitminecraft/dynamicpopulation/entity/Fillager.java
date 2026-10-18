@@ -77,26 +77,35 @@ public final class Fillager extends PathfinderMob {
      * so the only felt cost is the bounded refill rate the reconciliation loop already enforces on the next
      * interval -- there is no separate "leave a gap" step to perform here.
      *
-     * <p>The eligibility check (and therefore whether this returns a definitive result or falls through to
-     * {@code super}/PASS) MUST run identically on both sides, before any client/server branching: per
-     * NeoForge's interaction pipeline, ANY non-PASS {@code mobInteract} result -- including a client-side
-     * one -- is definitive and stops the game from then trying the other hand. An empty or below-cost main
-     * hand must therefore still return PASS (via {@code super}) on the client too, so a valid offhand
-     * emerald stack still gets its turn; unconditionally returning SUCCESS on the client regardless of what
-     * is held (the review-flagged bug this replaces) would silently swallow that offhand attempt.
+     * <p>The CLIENT must never evaluate the emerald threshold itself, in either direction: per NeoForge's
+     * interaction pipeline, ANY non-PASS {@code mobInteract} result -- including a client-side one -- is
+     * definitive, which also decides (via Minecraft's own main-hand/off-hand fallback loop, run once per
+     * side) which single hand even gets sent to the server at all. NeoForge's automatic config sync only
+     * runs at connection time; a later server-side live reload of {@code fillager_promotion_emerald_cost}
+     * (this config's whole point -- it is {@code RestartType.NONE}) is NOT re-pushed to an already-connected
+     * client, so the client's cached cost can silently diverge from the server's authoritative one for the
+     * rest of that session. If the client used that possibly-stale cost to decide "this hand already
+     * succeeded," it would never even try (or send to the server) a DIFFERENT hand the server's real cost
+     * would have accepted -- an empty/below-(stale-)cost main hand wrongly ending the attempt, or a
+     * below-(stale-)cost-looking main hand that the server would actually have accepted never getting sent
+     * because the client thought it needed the offhand instead. Always deferring (PASS) on the client makes
+     * every hand attempt reach the server regardless, which alone holds the authoritative cost and performs
+     * the real consumption -- correctness no longer depends on the two sides agreeing on a config value at
+     * all.
      */
     @Override
     protected InteractionResult mobInteract(Player player, InteractionHand hand) {
+        if (!FillagerPromotion.shouldEvaluateOnThisSide(!level().isClientSide)) {
+            return super.mobInteract(player, hand);
+        }
         var stack = player.getItemInHand(hand);
         int cost = DynamicPopulationConfig.get().promotionEmeraldCost();
         if (!FillagerPromotion.canPromote(stack.is(Items.EMERALD), stack.getCount(), cost)) {
             return super.mobInteract(player, hand);
         }
-        if (!level().isClientSide) {
-            stack.shrink(cost);
-            promote((ServerLevel) level());
-        }
-        return InteractionResult.sidedSuccess(level().isClientSide);
+        stack.shrink(cost);
+        promote((ServerLevel) level());
+        return InteractionResult.SUCCESS;
     }
 
     private void promote(ServerLevel level) {
