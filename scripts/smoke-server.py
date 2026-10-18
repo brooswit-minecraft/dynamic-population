@@ -499,6 +499,14 @@ def boot(root):
         # above (proven reliable, many times, in this very script) instead of fighting live melee-AI
         # dynamics on the attacker side too.
         attacker_pos = "600 -59 0"
+        # Review fix (P3, round 8, finding #2): capture the scan cursor BEFORE the attacker is even
+        # summoned, not after the setup/summon calls below have already run. The PASSED message and the
+        # comments above both claim complete, from-the-very-first-tick coverage ("BEFORE it is ever given
+        # a target", "a hit observed at ANY point is a real regression", "scanning the server's COMPLETE,
+        # never-dropped output end to end") -- that claim is only true if nothing the attacker could do
+        # between being summoned (already PersistenceRequired) and the setup-confirmation wait below can
+        # land outside the scanned window.
+        hit_scan_index = len(seen)
         process.stdin.write(
             f'summon dynamicpopulation:fillager 601 -59 0 '
             f'{{Tags:["dpop_attacker_check_villager","dpop_test_entity"],PersistenceRequired:1b}}\n'
@@ -546,7 +554,6 @@ def boot(root):
         hits_after_mark = 0
         health_missing = False
         attacker_missing = False
-        hit_scan_index = len(seen)
         for _ in range(10):
             for tag in ("dpop_attacker_check_villager", "dpop_attacker_check_zombie"):
                 process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set villager 1000\n')
@@ -564,8 +571,14 @@ def boot(root):
             # exactly the same shape as finding #2's existing health_missing guard below for the target, and
             # must be an equally hard failure, not a silent pass.
             attacker_health = query_health_unambiguous("dpop_attacker_check_villager", "entity.dynamicpopulation.fillager")
-            new_lines = seen[hit_scan_index:]
-            hit_scan_index = len(seen)
+            # Review fix (P3, round 8, finding #1): snapshot the buffer end ONCE into a local variable and
+            # use that same value for both the slice bound and the cursor update. Reading len(seen) twice
+            # (once to slice, once to advance the cursor) left a window between those two reads where the
+            # read_output thread could append another line -- that line would be newer than the slice just
+            # scanned but already behind the advanced cursor, so it would never be scanned at all.
+            scan_end = len(seen)
+            new_lines = seen[hit_scan_index:scan_end]
+            hit_scan_index = scan_end
             for attacker_tags in extract_combat_hits(new_lines, "dpop_attacker_check_zombie"):
                 if "dpop_attacker_check_villager" in attacker_tags:
                     hits_after_mark += 1
