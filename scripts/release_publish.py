@@ -128,18 +128,20 @@ def gh_release_view(tag):
     raise GhApiError(f"gh release view {tag} failed (not a confirmed not-found): {proc.stderr.strip()}")
 
 
-def gh_resolve_ref_commit(ref):
+def gh_commit_for_ref_or_none(ref):
     """Resolve a git ref (here, always a tag) to the commit sha it actually
     points at via the GitHub API, which dereferences an annotated tag
-    itself -- never trust a release field for this. Raises GhApiError on
-    any failure (including a 404, since this is only ever called for a
-    tag we were just told has a release, so a 404 here is itself an
-    inconsistency to fail on, not a "doesn't exist yet" signal)."""
+    itself -- never trust a release field for this. Returns None only on
+    a confirmed 404 (the tag genuinely doesn't exist). Raises GhApiError
+    on any other failure (auth, network, rate limit, unexpected shape) --
+    never silently treated as "doesn't exist"."""
     proc = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{ref}", "--jq", ".sha"],
                            capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise GhApiError(f"could not resolve tag {ref} to a commit: {proc.stderr.strip()}")
-    return proc.stdout.strip()
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    if "HTTP 404" in proc.stderr or "Not Found" in proc.stderr:
+        return None
+    raise GhApiError(f"could not resolve ref {ref} to a commit (not a confirmed not-found): {proc.stderr.strip()}")
 
 
 def gh_download_asset(tag, jar_name, dest_dir):
@@ -168,6 +170,16 @@ def publish_or_verify_identical(tag, commit_sha, jar_path, notes):
     try:
         existing = gh_release_view(tag)
     except ReleaseNotFound:
+        # No release yet, but `gh release create --target` does NOT move a
+        # pre-existing tag -- a tag can exist (e.g. a prior partial
+        # failure, or something else created it) without a release. Check
+        # the tag's own identity before creating, not just the release's.
+        tag_commit = gh_commit_for_ref_or_none(tag)
+        if tag_commit is not None and tag_commit != commit_sha:
+            raise SystemExit(
+                f"FAIL: no release exists for {tag}, but the git tag itself already exists at commit "
+                f"{tag_commit}, not this build's commit {commit_sha}. gh release create --target would "
+                "not move it; refusing to publish a release whose tag would point at the wrong commit.")
         gh_create_release(tag, jar_path, commit_sha, notes)
         print(f"published {tag} @ {commit_sha}")
         return
@@ -179,7 +191,10 @@ def publish_or_verify_identical(tag, commit_sha, jar_path, notes):
         raise SystemExit(f"FAIL: release {tag} already exists but has no asset named {jar_name} -- "
                           "not a retry of this exact build; refusing to touch it")
 
-    tag_commit = gh_resolve_ref_commit(tag)
+    tag_commit = gh_commit_for_ref_or_none(tag)
+    if tag_commit is None:
+        raise SystemExit(f"FAIL: release {tag} exists but its git tag does not resolve to any commit -- "
+                          "an inconsistent state; refusing to touch it")
 
     with tempfile.TemporaryDirectory() as tmp:
         gh_download_asset(tag, jar_name, tmp)

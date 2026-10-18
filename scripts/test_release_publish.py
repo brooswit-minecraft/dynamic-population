@@ -134,12 +134,49 @@ class PublishOrVerifyIdenticalTest(unittest.TestCase):
         self.jar_path = Path(self.tmp.name) / "dynamicpopulation-0.2.0-alpha.1.jar"
         self.jar_path.write_bytes(b"fake jar bytes")
 
+    @patch("release_publish.gh_commit_for_ref_or_none")
     @patch("release_publish.gh_create_release")
     @patch("release_publish.gh_release_view")
-    def test_creates_release_when_none_exists(self, mock_view, mock_create):
+    def test_creates_release_when_no_release_and_no_tag_exist(self, mock_view, mock_create, mock_tag):
         mock_view.side_effect = ReleaseNotFound("v0.2.0-alpha.1")
+        mock_tag.return_value = None
         publish_or_verify_identical("v0.2.0-alpha.1", "commit-a", str(self.jar_path), "notes")
         mock_create.assert_called_once_with("v0.2.0-alpha.1", str(self.jar_path), "commit-a", "notes")
+
+    @patch("release_publish.gh_commit_for_ref_or_none")
+    @patch("release_publish.gh_create_release")
+    @patch("release_publish.gh_release_view")
+    def test_creates_release_when_no_release_but_tag_already_matches(self, mock_view, mock_create, mock_tag):
+        # A tag can exist without a release (e.g. a prior partial failure).
+        # If it already points at this exact build's commit, creating the
+        # release is still safe.
+        mock_view.side_effect = ReleaseNotFound("v0.2.0-alpha.1")
+        mock_tag.return_value = "commit-a"
+        publish_or_verify_identical("v0.2.0-alpha.1", "commit-a", str(self.jar_path), "notes")
+        mock_create.assert_called_once_with("v0.2.0-alpha.1", str(self.jar_path), "commit-a", "notes")
+
+    @patch("release_publish.gh_commit_for_ref_or_none")
+    @patch("release_publish.gh_create_release")
+    @patch("release_publish.gh_release_view")
+    def test_never_creates_when_no_release_but_tag_points_elsewhere(self, mock_view, mock_create, mock_tag):
+        # gh release create --target does not move a pre-existing tag --
+        # publishing here would tag a release whose git tag disagrees with
+        # the commit that was actually built and smoke-tested.
+        mock_view.side_effect = ReleaseNotFound("v0.2.0-alpha.1")
+        mock_tag.return_value = "some-other-commit"
+        with self.assertRaises(SystemExit):
+            publish_or_verify_identical("v0.2.0-alpha.1", "commit-a", str(self.jar_path), "notes")
+        mock_create.assert_not_called()
+
+    @patch("release_publish.gh_commit_for_ref_or_none")
+    @patch("release_publish.gh_create_release")
+    @patch("release_publish.gh_release_view")
+    def test_never_creates_when_tag_lookup_fails_on_create_path(self, mock_view, mock_create, mock_tag):
+        mock_view.side_effect = ReleaseNotFound("v0.2.0-alpha.1")
+        mock_tag.side_effect = GhApiError("502 Bad Gateway")
+        with self.assertRaises(GhApiError):
+            publish_or_verify_identical("v0.2.0-alpha.1", "commit-a", str(self.jar_path), "notes")
+        mock_create.assert_not_called()
 
     @patch("release_publish.gh_release_view")
     def test_api_error_fails_closed_without_creating(self, mock_view):
@@ -151,7 +188,7 @@ class PublishOrVerifyIdenticalTest(unittest.TestCase):
             publish_or_verify_identical("v0.2.0-alpha.1", "commit-a", str(self.jar_path), "notes")
 
     @patch("release_publish.gh_download_asset")
-    @patch("release_publish.gh_resolve_ref_commit")
+    @patch("release_publish.gh_commit_for_ref_or_none")
     @patch("release_publish.gh_release_view")
     def test_identical_retry_is_skipped_without_recreating(self, mock_view, mock_resolve, mock_download):
         mock_view.return_value = {"targetCommitish": "commit-a", "assets": [{"name": self.jar_path.name}]}
@@ -166,7 +203,7 @@ class PublishOrVerifyIdenticalTest(unittest.TestCase):
             mock_create.assert_not_called()
 
     @patch("release_publish.gh_download_asset")
-    @patch("release_publish.gh_resolve_ref_commit")
+    @patch("release_publish.gh_commit_for_ref_or_none")
     @patch("release_publish.gh_release_view")
     def test_tag_pointing_elsewhere_fails_even_though_target_commitish_and_jar_agree(
         self, mock_view, mock_resolve, mock_download
@@ -187,7 +224,7 @@ class PublishOrVerifyIdenticalTest(unittest.TestCase):
             mock_create.assert_not_called()
 
     @patch("release_publish.gh_download_asset")
-    @patch("release_publish.gh_resolve_ref_commit")
+    @patch("release_publish.gh_commit_for_ref_or_none")
     @patch("release_publish.gh_release_view")
     def test_different_jar_content_fails_even_with_matching_commits(self, mock_view, mock_resolve, mock_download):
         mock_view.return_value = {"targetCommitish": "commit-a", "assets": [{"name": self.jar_path.name}]}
@@ -203,6 +240,14 @@ class PublishOrVerifyIdenticalTest(unittest.TestCase):
     @patch("release_publish.gh_release_view")
     def test_existing_release_missing_expected_asset_fails_closed(self, mock_view):
         mock_view.return_value = {"targetCommitish": "commit-a", "assets": [{"name": "some-other-file.jar"}]}
+        with self.assertRaises(SystemExit):
+            publish_or_verify_identical("v0.2.0-alpha.1", "commit-a", str(self.jar_path), "notes")
+
+    @patch("release_publish.gh_commit_for_ref_or_none")
+    @patch("release_publish.gh_release_view")
+    def test_existing_release_with_unresolvable_tag_fails_closed(self, mock_view, mock_tag):
+        mock_view.return_value = {"targetCommitish": "commit-a", "assets": [{"name": self.jar_path.name}]}
+        mock_tag.return_value = None
         with self.assertRaises(SystemExit):
             publish_or_verify_identical("v0.2.0-alpha.1", "commit-a", str(self.jar_path), "notes")
 
