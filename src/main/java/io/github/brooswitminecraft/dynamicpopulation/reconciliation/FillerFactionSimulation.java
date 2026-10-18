@@ -105,8 +105,19 @@ public final class FillerFactionSimulation {
         }
     }
 
+    /**
+     * Review fix (P1, round 2): a tagged filler that LATER becomes persistent (named with a name tag,
+     * leashed, or any other vanilla persistence-granting action) must stop counting toward reconciliation
+     * entirely, not merely stop being a valid population-combat TARGET (already fixed separately in
+     * {@code PopulationCombatTargeting}). {@code isFiller} is both where residency is counted toward the
+     * local density target AND the candidate pool a bounded despawn picks from, so excluding
+     * {@code mob.isPersistenceRequired()} here is the single choke point that removes a now-persistent
+     * filler from ALL reconciliation accounting at once -- it is never counted as present, never
+     * contributes to "desired" capacity being already met, and is never despawned by the bounded
+     * excess-removal (since it is no longer a candidate at all, not merely skipped).
+     */
     private static boolean isFiller(net.minecraft.world.entity.Entity entity, Spec spec) {
-        return entity instanceof Mob mob && mob.getTags().contains(spec.tag());
+        return entity instanceof Mob mob && mob.getTags().contains(spec.tag()) && !mob.isPersistenceRequired();
     }
 
     private static List<Mob> residents(ServerLevel level, LevelField field, CellKey cell, Spec spec) {

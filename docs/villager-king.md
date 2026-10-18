@@ -230,6 +230,19 @@ exact check every evaluation cycle, a filler that transitions to persistent
 mid-chase loses its eligibility the very next check, not just at the next
 reconciliation pass.
 
+**Review fix (P1, round 2 -- the ATTACKER side):** the round-1 fix above only
+covered a persistent filler as a TARGET; a filler that becomes persistent
+while it is itself ACTIVELY ATTACKING (not just a potential target) could
+still keep initiating/continuing population-combat. Fixed in two places:
+(1) `PopulationCombatTargetGoal#canUse`/`canContinueToUse` now also check
+the ATTACKER's own current `isPersistenceRequired()` every evaluation cycle
+(`attackerEligible()`), not just at acquisition time; (2)
+`FillerFactionSimulation.isFiller` now also excludes `isPersistenceRequired()`
+mobs, so a now-persistent filler is removed from reconciliation's counting
+AND bounded-despawn candidate pool entirely, not just from being a combat
+participant. Verified live (`scripts/smoke-server.py`): marking an actively
+engaged attacker persistent mid-chase stops it from dealing further damage.
+
 **The MINECRAFT-389 exception**: MINECRAFT-389 gave Fillager exactly one
 goal (`PanicGoal`, flee-on-hurt) and ZERO `targetSelector` goals, so a
 Fillager "never retaliates or acquires a combat target". MINECRAFT-390 adds
@@ -278,28 +291,37 @@ ignore the spawn-time light-level restriction (`FillerSpawnRules`, which
 otherwise mirrors vanilla's own overworld hostile-spawn light cap of <= 7 —
 remember this mod spawns fillers itself, never through vanilla's natural
 spawner, so this restriction is this mod's own, not a bypass of vanilla's)
-and have sun-exposure burning suppressed (`SunImmunityTicking`, an
-every-tick reactive extinguish, since a literal vanilla Zombie/Skeleton
-instance has no override point for `isSunBurnTick()` the way the Kings do).
+and have sun-exposure burning suppressed (`SunImmunityTicking`).
 
-**Review fix (P1-2):** this check is scoped to SUNLIGHT ignition specifically,
-not "any fire". `SunImmunityTicking` reflectively invokes vanilla's own
-`Mob#isSunBurnTick()` on the real entity every tick (there is no NeoForge
-event around it, and no override point for a non-subclass instance) and
-only clears fire when THAT returns true — `isSunBurnTick()` has nothing to
-do with contact fire sources (lava, fire blocks, Flame-enchantment arrows),
-so ordinary ignition from any of those is left completely untouched
-regardless of density. `SunBurnSuppression.shouldSuppress` is the pure,
-unit-tested decision; see its own javadoc, and `SunImmunityTicking`'s, for
-the one honestly-flagged remaining edge case this cannot fully close
-without a Mixin/ASM transformer (a filler standing in lava/fire while ALSO
-meeting every deterministic sun-tick condition simultaneously) — a far
-narrower gap than the original version, which cleared ALL fire regardless
-of light/time/sky/weather.
+**Review fix (P1-2), final design (two prior attempts were each caught --
+one by live testing, one by re-review -- see `SunImmunityTicking`'s own
+javadoc for the full blow-by-blow):** fire/soul-fire block contact and lava
+contact use the IDENTICAL `igniteForSeconds(8.0F)` call vanilla's own
+sun-burn path uses, so duration/state alone can never disambiguate "on fire
+from the sun" from "on fire from a fire block burning in an open, sunlit
+field" -- both can be simultaneously true. The fix only ever acts on the
+EXACT TICK a FRESH ignition happens (a jump in remaining fire ticks, or a
+transition from not-on-fire to on-fire; a continuing, already-decaying fire
+is left completely alone regardless of its true origin), and at that exact
+moment positively rules out every KNOWN non-sun cause before treating it as
+sun-caused: standing in/touching fire, soul fire, or lava THIS tick, or
+having just been struck by a projectile that was itself on fire (exactly
+how a Flame-enchanted arrow signals its own ignition intent -- see
+`AbstractArrow#onHitEntity`). Only when none of those apply, the fresh
+ignition coincides with vanilla's own deterministic sun-tick conditions
+(daytime, bright, open sky, dry -- everything `Mob#isSunBurnTick()` checks
+except its final per-tick random roll, which an earlier attempt tried to
+re-invoke directly and found unreliable), and the density override is
+active, is the fire cleared. `SunBurnSuppression.shouldSuppress` is the
+pure, unit-tested decision (including the reviewer's exact test case:
+sun-eligible conditions AND a known non-sun cause both true at once must
+never suppress); see `SunImmunityTicking`'s own javadoc for the one
+honestly-flagged remaining gap this cannot fully close without a Mixin/ASM
+transformer (a modded ignition source this mod doesn't know to check for).
 
 Does NOT grant general fire/lava immunity — only the sun-exposure burning
-check specifically; ordinary fire/lava damage from any other source is
-untouched. One faction's density grants only that faction's override
+check specifically; ordinary fire/lava/Flame damage from any other source
+is untouched. One faction's density grants only that faction's override
 (Zombie density never suppresses Skeleton burning, or vice versa). Fully
 independent of, and composable with, the >=500 combat threshold — a cell
 can be below 250 (normal rules), between 250 and 500 (environmental

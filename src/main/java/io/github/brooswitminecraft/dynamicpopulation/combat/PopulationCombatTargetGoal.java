@@ -60,8 +60,25 @@ public final class PopulationCombatTargetGoal extends TargetGoal {
         return field.get(field.cellAt(mob.blockPosition()));
     }
 
+    /**
+     * Review fix (P1, round 2): the ATTACKER's own current persistence must be revalidated every tick, not
+     * just at acquisition time -- a filler that becomes persistent (named, leashed, etc.) mid-chase must
+     * stop initiating/continuing population-combat itself, exactly as it already stops being a valid
+     * TARGET for others ({@code PopulationCombatTargeting.isEligibleOpponent} already checks this on the
+     * target side). Kings never reach this check at all: this goal is never installed on a King in the
+     * first place ({@code Fillager} doesn't extend to the Kings, {@code FillerTargetingInstaller}
+     * explicitly excludes King instances), so there is no risk of this accidentally disabling a King's
+     * own (nonexistent) use of this goal.
+     */
+    private boolean attackerEligible() {
+        return !mob.isPersistenceRequired();
+    }
+
     @Override
     public boolean canUse() {
+        if (!attackerEligible()) {
+            return false;
+        }
         if (!(mob.level() instanceof ServerLevel level) || !PopulationSimulation.simulated(level)) {
             return false;
         }
@@ -74,6 +91,9 @@ public final class PopulationCombatTargetGoal extends TargetGoal {
 
     @Override
     public boolean canContinueToUse() {
+        if (!attackerEligible()) {
+            return false;
+        }
         if (!(mob.level() instanceof ServerLevel level) || !PopulationSimulation.simulated(level)) {
             return false;
         }

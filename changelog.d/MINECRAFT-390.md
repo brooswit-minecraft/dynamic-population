@@ -24,14 +24,19 @@ bump: minor
   within the configured radius of each other, but Kings of different factions can coexist at/near the same
   location (see docs/villager-king.md for the rationale).
 
-### Fixed (review findings on this ticket's own PR)
+### Fixed (review findings on this ticket's own PR, two rounds)
 - Day/night spawn rate no longer floors to a literal zero all night/day at the default refill limit;
   `SpawnRateBudget` now carries the fractional remainder across reconciliation intervals.
-- The >250 sun-burn override now ONLY suppresses genuine sunlight ignition (verified live on a real
-  dedicated server) instead of clearing all fire indiscriminately, and does so reliably rather than on a
-  rare, coincidental tick.
+- The >250 sun-burn override now ONLY suppresses genuine sunlight ignition, never ordinary fire/lava/
+  Flame-enchantment ignition even when daytime/light/open-sky conditions also happen to hold (fire blocks
+  use the identical ignite-duration call sun-burning does, so this required detecting the exact tick of a
+  fresh ignition and positively ruling out every known non-sun cause, not just checking current fire state)
+  -- verified live on a real dedicated server, including a dedicated reproduction with zero damage over a
+  30-second window.
 - A filler that becomes persistent (named, leashed, etc.) is now actually excluded from population-combat
-  targeting -- a dead-code condition previously let it through regardless.
+  as BOTH a target (a dead-code condition previously let it through regardless) and an attacker (it now
+  stops initiating/continuing combat immediately if marked persistent mid-chase), and is excluded from
+  reconciliation's own counting/despawn pool entirely once persistent.
 - Fillager now has a real `ATTACK_DAMAGE` attribute so its population-combat `MeleeAttackGoal` isn't
   functionally toothless.
 
