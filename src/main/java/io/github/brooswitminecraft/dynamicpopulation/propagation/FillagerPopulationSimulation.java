@@ -116,9 +116,18 @@ public final class FillagerPopulationSimulation {
         }
         LevelField field = PopulationSimulation.field(level);
         CellKey localCell = field.cellAt(fillager.blockPosition());
+        var config = DynamicPopulationConfig.get();
         boolean unsafe = isUnsafeDeath(fillager, event.getSource());
-        int decrement = DynamicPopulationConfig.get().unsafeDeathTargetDecrement();
-        FillagerReconciliation.applyUnsafeDeathIfUnsafe(unsafe, localCell, field::get, field::set, decrement);
+        if (unsafe) {
+            FillagerReconciliation.applyUnsafeDeathIfUnsafe(true, localCell, field::get, field::set,
+                config.unsafeDeathTargetDecrement());
+        } else {
+            // AC6 (MINECRAFT-30): every Fillager death DPOP-7's unsafe-location case doesn't already cover
+            // (killed by a player or mob, for example) is still a negative village-activity signal, just a
+            // weaker/independently-configurable one than a genuine local hazard.
+            FillagerReconciliation.adjustLocalTarget(localCell, -config.fillagerOtherDeathTargetDecrement(),
+                field::get, field::set);
+        }
     }
 
     /**
