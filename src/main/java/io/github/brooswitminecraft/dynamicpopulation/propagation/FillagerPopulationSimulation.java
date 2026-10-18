@@ -7,6 +7,7 @@ import java.util.Set;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.entity.DynamicPopulationEntities;
 import io.github.brooswitminecraft.dynamicpopulation.entity.Fillager;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerReconciliation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -45,8 +46,15 @@ public final class FillagerPopulationSimulation {
                 cells.add(field.cellAt(fillager.blockPosition()));
             }
         }
+        // MINECRAFT-390 (settled spec): day/night spawn-RATE multiplier -- scales only the refill/spawn
+        // caps, never despawnCapPerInterval (despawn is unaffected), never density/target accounting, and
+        // computed from game ticks only (never wall-clock). See DayNightSpawnRate's class doc for the
+        // concrete Fillager 12h/12h alignment.
+        long dayTime = level.getDayTime();
+        int scaledRefill = DayNightSpawnRate.scaleCap(config.reconciliationRefillPerInterval(), dayTime, Faction.VILLAGER);
+        int scaledSpawnCap = DayNightSpawnRate.scaleCap(config.spawnCapPerInterval(), dayTime, Faction.VILLAGER);
         var params = new FillagerReconciliation.Params(config.samplingHorizontalRadius(), config.samplingVerticalRadius(),
-            config.fillagersPerFullCell(), config.reconciliationRefillPerInterval(), config.spawnCapPerInterval(),
+            config.fillagersPerFullCell(), scaledRefill, scaledSpawnCap,
             config.despawnCapPerInterval());
         for (CellKey cell : cells) {
             if (field.blockedReason(cell) != null) {

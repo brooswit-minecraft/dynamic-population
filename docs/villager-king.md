@@ -277,16 +277,50 @@ independent of, and composable with, the >=500 combat threshold — a cell
 can be below 250 (normal rules), between 250 and 500 (environmental
 override active, combat not yet active), or at/above 500 (both active).
 
-## Deferred/unstable sub-requirement: per-faction time-of-day spawn-rate multiplier
+## Day/night spawn-rate multiplier (MINECRAFT-390, settled per Jira comment id 48143)
 
-A late-added requirement asked for an additional spawn-RATE multiplier tied
-to an 8-Minecraft-hour peak window per faction (day/night cycle). While this
-PR was in progress, the exact shape of that requirement changed three times
-in rapid succession (a flat peak/valley rule, then a 3x3 per-faction/
-per-window matrix, then a further split pulling Fillager onto its own
-separate 12h/12h schedule with yet another value change) without the spec
-ever settling. Given the requirement never stabilized, it is DELIBERATELY
-NOT implemented in this PR — implementing against a still-moving target
-would have meant shipping something likely to need yet another rewrite.
-Flagged here as an explicit follow-up: file it as its own ticket once the
-exact multiplier table is settled and stable.
+Reconciliation's per-interval spawn RATE (never despawn, never density/target
+accounting, never Kings) is scaled by a per-faction time-of-day multiplier,
+read from world/game ticks only (`ServerLevel#getDayTime() % 24000`) —
+**never real wall-clock time**. `DayNightSpawnRate` is the pure logic;
+`FillagerPopulationSimulation.reconcile`/`FillerFactionSimulation.reconcile`
+are the two call sites, each scaling only `fillager_refill_per_interval` and
+`fillager_spawn_cap_per_interval` (never `fillager_despawn_cap_per_interval`)
+before building the same `FillagerReconciliation.Params` as before.
+
+**Fillager: an independent 12h/12h day/night split** (NOT part of the
+8-hour-phase matrix below) — 100% of the normal configured rate for
+`[0, 12000)` (dawn through sunset), 25% for `[12000, 24000)` (sunset through
+the next dawn).
+
+**Zombie/Skeleton: three successive, equal, non-overlapping 8000-tick
+phases tiling the full cycle**, cut at ticks 4000, 12000, and 20000 (mod
+24000), in the fixed order Day / Early-night / Late-night:
+
+| Phase | Tick range | Clock-equivalent | Alignment with real darkness |
+|---|---|---|---|
+| Day | `[4000, 12000)` | 10:00-18:00 | solidly daytime; ends exactly at vanilla's own sunset tick (12000) |
+| Early-night (Zombie's own peak) | `[12000, 20000)` | 18:00-2:00 | starts EXACTLY at vanilla's sunset tick (12000) |
+| Late-night (Skeleton's own peak) | `[20000, 24000) ∪ [0, 4000)` | 2:00-10:00 | covers deep night through vanilla's own sunrise ticks (23000-24000) and just past dawn |
+
+Cutting at 4000/12000/20000 (rather than naively at 0/8000/16000) is the one
+deliberate choice that makes Early-night start exactly at real sunset rather
+than drift 4000 ticks ahead of it into genuine daylight.
+
+Multiplier matrix (relative to each faction's OWN normal configured rate):
+
+| Faction | Day | Early-night | Late-night |
+|---|---|---|---|
+| Zombie | 0.25 | **1.00** (own peak) | 0.50 |
+| Skeleton | 0.25 | 0.50 | **1.00** (own peak) |
+
+Fully independent of, and composed with (never gating), the `>250`
+light/sun override above: both are computed from entirely separate inputs
+(game tick vs. local density) and neither call site lets one short-circuit
+the other.
+
+This requirement's exact shape changed three times in rapid succession
+while this PR was in progress before settling on the above (confirmed via
+Jira comment id 48143 on this ticket) — flagged here for anyone reading the
+PR history who sees an earlier "deliberately not implemented" note
+superseded by this section.

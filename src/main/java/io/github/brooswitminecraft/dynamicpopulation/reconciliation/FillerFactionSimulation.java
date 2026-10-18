@@ -11,6 +11,7 @@ import io.github.brooswitminecraft.dynamicpopulation.combat.FillerSpawnRules;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import io.github.brooswitminecraft.dynamicpopulation.propagation.CellKey;
+import io.github.brooswitminecraft.dynamicpopulation.propagation.DayNightSpawnRate;
 import io.github.brooswitminecraft.dynamicpopulation.propagation.LevelField;
 import io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationSimulation;
 import net.minecraft.core.BlockPos;
@@ -77,8 +78,15 @@ public final class FillerFactionSimulation {
                 cells.add(field.cellAt(entity.blockPosition()));
             }
         }
+        // MINECRAFT-390 (settled spec): day/night spawn-RATE multiplier, scaling only the refill/spawn
+        // caps -- never despawnCapPerInterval, never density/target accounting -- and composed completely
+        // independently of the >250 light/sun EnvironmentalOverride (different inputs, never gating each
+        // other). See DayNightSpawnRate's class doc for the three-phase Zombie/Skeleton alignment.
+        long dayTime = level.getDayTime();
+        int scaledRefill = DayNightSpawnRate.scaleCap(config.reconciliationRefillPerInterval(), dayTime, spec.faction());
+        int scaledSpawnCap = DayNightSpawnRate.scaleCap(config.spawnCapPerInterval(), dayTime, spec.faction());
         var params = new FillagerReconciliation.Params(config.samplingHorizontalRadius(), config.samplingVerticalRadius(),
-            config.fillagersPerFullCell(), config.reconciliationRefillPerInterval(), config.spawnCapPerInterval(),
+            config.fillagersPerFullCell(), scaledRefill, scaledSpawnCap,
             config.despawnCapPerInterval());
         for (CellKey cell : cells) {
             if (field.blockedReason(cell) != null) {

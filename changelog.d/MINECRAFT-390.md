@@ -14,6 +14,10 @@ bump: minor
   for that faction's ordinary Zombie/Skeleton fillers (independent of the combat threshold).
 - `/dpop king settle [villager|zombie|skeleton]` founds a King of the given faction (bare `settle` still
   founds a Villager King, unchanged).
+- A per-faction day/night spawn-rate multiplier for reconciliation (never despawn/density/Kings): Fillager
+  uses an independent 12h/12h day/night split (100%/25%); Zombie and Skeleton share three 8h phases
+  (Day/Early-night/Late-night) with a 0.25/1.00/0.50 and 0.25/0.50/1.00 matrix respectively, each faction
+  peaking in its own phase. Composed independently of, never gating, the >250 light/sun override.
 
 ### Changed
 - King territory/uniqueness is now evaluated per-faction: two Kings of the SAME faction still can't settle
