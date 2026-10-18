@@ -171,6 +171,38 @@ public final class Fillager extends PathfinderMob {
     }
 
     /**
+     * MINECRAFT-390 acceptance-evidence test hook: performs the EXACT SAME entity-conversion effect as a
+     * successful {@link #mobInteract} (removes this Fillager via {@code convertTo}, spawns a permanent
+     * Villager in its place) without requiring a connected {@link Player} or a real emerald item stack.
+     *
+     * <p>{@link FillagerPromotion#canPromote}'s economic threshold check is already unit-tested
+     * (see {@code FillagerPromotionTest}); what this hook exists to let a live, headless dedicated-server
+     * harness exercise is the entity-level conversion/removal mechanics themselves -- in particular,
+     * whether promoting a Fillager WHILE it is actively mid-panic (fleeing via {@link PanicGoal}) still
+     * removes exactly the Fillager and produces exactly one permanent villager, with no double-count --
+     * which only a running game, not a pure unit test, can prove. {@code scripts/smoke-server.py}'s
+     * `/dpop fillager promote` debug command (see {@code PopulationCommands}) is the only caller; no
+     * production gameplay code path invokes this.
+     *
+     * <p>Confirmed live: vanilla {@code Mob#convertTo} does NOT copy this entity's own scoreboard tags onto
+     * the new Villager (it copies position/leash/equipment only), so this hook re-applies them itself --
+     * purely so the test harness's own tag-based selectors can find the resulting entity. This is test-only
+     * observability, not a behavioral change to promotion: a real emerald-triggered promotion via
+     * {@link #mobInteract} has this exact same (pre-existing, unrelated to this ticket) tag-loss property.
+     */
+    public void forcePromoteForTesting() {
+        ServerLevel level = (ServerLevel) level();
+        var tags = new java.util.ArrayList<>(getTags());
+        Villager villager = convertTo(EntityType.VILLAGER, false);
+        if (villager != null) {
+            villager.finalizeSpawn(level, level.getCurrentDifficultyAt(villager.blockPosition()), MobSpawnType.CONVERSION, null);
+            for (String tag : tags) {
+                villager.addTag(tag);
+            }
+        }
+    }
+
+    /**
      * Whether this Fillager is (as of this tick) standing on an unsafe location, for AC9. Deliberately
      * location-based rather than damage-type-based for wither rose: {@code DamageTypes.WITHER} is also the
      * damage dealt by the Wither status effect from a wither skeleton or the Wither boss, which must NOT

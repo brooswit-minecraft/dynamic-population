@@ -1,14 +1,17 @@
 package io.github.brooswitminecraft.dynamicpopulation.propagation;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 
+import io.github.brooswitminecraft.dynamicpopulation.entity.Fillager;
 import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.entity.EntityTypeTest;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
@@ -21,6 +24,11 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
  * backward-compatible pattern {@code KingCommands}' own {@code settle [faction]} already uses. This is the
  * same existing debug-seeding mechanism the ticket itself documents as the sole direct-seed test path
  * (`docs/propagation.md`), now faction-aware -- not a new spawning mechanism.
+ *
+ * <p>MINECRAFT-390 acceptance-evidence follow-up: also adds {@code fillager promote <tag>}, a debug-only
+ * command used exclusively by {@code scripts/smoke-server.py} to test-exercise promotion mid-panic without
+ * a connected player or a real emerald stack -- see {@link Fillager#forcePromoteForTesting} for why no
+ * production gameplay path needs (or should use) this.
  */
 public final class PopulationCommands {
     private PopulationCommands() { }
@@ -44,7 +52,10 @@ public final class PopulationCommands {
                     .executes(c -> set(c, Faction.SKELETON, IntegerArgumentType.getInteger(c, "ppt"))))))
             .then(Commands.literal("step").executes(c -> step(c, 1))
                 .then(Commands.argument("count", IntegerArgumentType.integer(1, 10000)).executes(c -> step(c, IntegerArgumentType.getInteger(c, "count")))))
-            .then(Commands.literal("clear").executes(PopulationCommands::clear)));
+            .then(Commands.literal("clear").executes(PopulationCommands::clear))
+            .then(Commands.literal("fillager")
+                .then(Commands.literal("promote")
+                    .then(Commands.argument("tag", StringArgumentType.word()).executes(PopulationCommands::promoteTaggedFillager)))));
     }
 
     private static ServerLevel level(CommandContext<CommandSourceStack> c) {
@@ -101,6 +112,25 @@ public final class PopulationCommands {
         int n = cells;
         c.getSource().sendSuccess(() -> Component.literal(n + " populated cell(s), total " + t + " ppt"), false);
         return n;
+    }
+
+    /**
+     * MINECRAFT-390 acceptance-evidence test hook: finds the nearest {@link Fillager} carrying {@code tag}
+     * and promotes it via {@link Fillager#forcePromoteForTesting} -- the exact same conversion code
+     * {@code Fillager#mobInteract} uses on a successful emerald-cost interaction, just without needing a
+     * connected player or a real item stack. Debug-only (same op-level-2 gate as every other command in
+     * this tree); {@code scripts/smoke-server.py} is the only intended caller.
+     */
+    private static int promoteTaggedFillager(CommandContext<CommandSourceStack> c) {
+        String tag = StringArgumentType.getString(c, "tag");
+        ServerLevel level = level(c);
+        for (Fillager fillager : level.getEntities(EntityTypeTest.forClass(Fillager.class), e -> e.getTags().contains(tag))) {
+            fillager.forcePromoteForTesting();
+            c.getSource().sendSuccess(() -> Component.literal("promoted tagged Fillager"), true);
+            return 1;
+        }
+        c.getSource().sendSuccess(() -> Component.literal("no Fillager found with tag " + tag), false);
+        return 0;
     }
 
     private static int clear(CommandContext<CommandSourceStack> c) {
