@@ -31,6 +31,7 @@ public class DynamicPopulationMod {
         DynamicPopulationEntities.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.FillagerPopulationSimulation.class);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.VillageActivityFeedback.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationSimulation.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationCommands.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.king.KingSimulation.class);

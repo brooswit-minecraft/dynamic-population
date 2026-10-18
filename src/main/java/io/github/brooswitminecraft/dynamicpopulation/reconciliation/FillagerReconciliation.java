@@ -70,7 +70,7 @@ public final class FillagerReconciliation {
 
     /** The death feedback is deliberately a local scalar operation, never a sampled-window operation. */
     public static int unsafeDeathTargetAfter(int localTarget, int decrement) {
-        return Math.max(0, localTarget - decrement);
+        return targetAfterAdjustment(localTarget, -decrement);
     }
 
     /**
@@ -85,6 +85,38 @@ public final class FillagerReconciliation {
         if (!unsafe) {
             return;
         }
-        write.accept(localCell, unsafeDeathTargetAfter(read.applyAsInt(localCell), decrement));
+        adjustLocalTarget(localCell, -decrement, read, write);
+    }
+
+    /**
+     * AC6 (MINECRAFT-30, village activity feedback): a local target adjustment, clamped to the field's own
+     * {@code 0..CAPACITY} range the same way {@code LevelField.set} clamps it, so a test driven purely
+     * through maps (no real {@code LevelField}) still sees the same bound a real server would. A positive
+     * {@code delta} raises the target (trading, breeding, building, farming, golem creation); a negative one
+     * lowers it (a non-unsafe-location Fillager death, or destruction).
+     */
+    public static int targetAfterAdjustment(int localTarget, int delta) {
+        return Math.max(0, Math.min(Propagation.CAPACITY, localTarget + delta));
+    }
+
+    /**
+     * The shared event-to-storage wiring behind every AC6 village-activity hook: read-then-write exactly the
+     * one local cell, never a neighbour -- the same locality {@link #applyUnsafeDeathIfUnsafe} already
+     * enforces for AC9.
+     */
+    public static void adjustLocalTarget(CellKey localCell, int delta, ToIntFunction<CellKey> read,
+            BiConsumer<CellKey, Integer> write) {
+        write.accept(localCell, targetAfterAdjustment(read.applyAsInt(localCell), delta));
+    }
+
+    /**
+     * Destruction (AC6): every distinct cell an explosion touched is decremented independently -- never
+     * double-counted, never spread to a cell the explosion did not actually touch.
+     */
+    public static void applyDestruction(java.util.Set<CellKey> touchedCells, int decrement,
+            ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write) {
+        for (CellKey cell : touchedCells) {
+            adjustLocalTarget(cell, -decrement, read, write);
+        }
     }
 }

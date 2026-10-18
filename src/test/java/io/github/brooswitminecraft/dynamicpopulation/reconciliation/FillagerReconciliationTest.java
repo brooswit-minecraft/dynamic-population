@@ -200,4 +200,57 @@ class FillagerReconciliationTest {
 
         assertEquals(before, storage);
     }
+
+    // AC6 (MINECRAFT-30): village activity feedback.
+
+    @Test
+    void positiveActivityRaisesOnlyTheLocalCell() {
+        Map<CellKey, Integer> storage = new HashMap<>();
+        CellKey neighbour = ORIGIN.offset(1, 0, 0);
+        storage.put(ORIGIN, 100);
+        storage.put(neighbour, 700);
+
+        FillagerReconciliation.adjustLocalTarget(ORIGIN, 10, storage::get, storage::put);
+
+        assertEquals(110, storage.get(ORIGIN), "a positive delta must raise exactly the local cell");
+        assertEquals(700, storage.get(neighbour), "a neighbouring cell must never be touched");
+    }
+
+    @Test
+    void negativeActivityLowersOnlyTheLocalCell() {
+        Map<CellKey, Integer> storage = new HashMap<>();
+        storage.put(ORIGIN, 100);
+
+        FillagerReconciliation.adjustLocalTarget(ORIGIN, -40, storage::get, storage::put);
+
+        assertEquals(60, storage.get(ORIGIN));
+    }
+
+    @Test
+    void targetAdjustmentNeverGoesBelowZero() {
+        assertEquals(0, FillagerReconciliation.targetAfterAdjustment(10, -40),
+            "a lowering event must clamp at zero, never go negative");
+    }
+
+    @Test
+    void targetAdjustmentNeverExceedsCapacity() {
+        assertEquals(1000, FillagerReconciliation.targetAfterAdjustment(990, 500),
+            "a raising event must clamp at the field's own CAPACITY, matching LevelField.set's own clamp");
+    }
+
+    @Test
+    void destructionDecrementsEveryDistinctTouchedCellExactlyOnce() {
+        Map<CellKey, Integer> storage = new HashMap<>();
+        CellKey second = ORIGIN.offset(1, 0, 0);
+        CellKey untouched = ORIGIN.offset(5, 0, 0);
+        storage.put(ORIGIN, 100);
+        storage.put(second, 100);
+        storage.put(untouched, 100);
+
+        FillagerReconciliation.applyDestruction(Set.of(ORIGIN, second), 30, storage::get, storage::put);
+
+        assertEquals(70, storage.get(ORIGIN));
+        assertEquals(70, storage.get(second));
+        assertEquals(100, storage.get(untouched), "a cell an explosion never touched must be left alone");
+    }
 }
