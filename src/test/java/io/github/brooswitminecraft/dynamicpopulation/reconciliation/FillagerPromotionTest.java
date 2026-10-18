@@ -36,6 +36,23 @@ class FillagerPromotionTest {
     }
 
     @Test
+    void emptyMainHandMustNotBlockAValidOffhandAttempt() {
+        // The exact review-flagged regression (Fillager.mobInteract previously hardcoded a definitive
+        // SUCCESS on the client regardless of what was held): Entity.interact's pipeline treats ANY
+        // non-PASS mobInteract result as definitive and never then tries the other hand, on either side.
+        // So the SAME eligibility gate that decides "defer, don't consume this hand's result" must say so
+        // for an empty main hand, on both sides, before a same-tick offhand attempt is even considered.
+        assertFalse(FillagerPromotion.canPromote(false, 0, 1), "an empty main hand must defer, never succeed");
+        assertTrue(FillagerPromotion.canPromote(true, 1, 1), "the offhand attempt that follows must still promote");
+    }
+
+    @Test
+    void belowCostMainHandMustNotBlockAValidOffhandAttempt() {
+        assertFalse(FillagerPromotion.canPromote(true, 2, 3), "an under-cost main hand must defer, never succeed");
+        assertTrue(FillagerPromotion.canPromote(true, 3, 3), "the offhand attempt that follows must still promote");
+    }
+
+    @Test
     void defaultCostIsOneEmerald() {
         DynamicPopulationConfigTestSupport.load();
         assertTrue(1 == DynamicPopulationConfig.get().promotionEmeraldCost(),

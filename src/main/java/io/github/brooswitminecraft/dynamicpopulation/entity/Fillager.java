@@ -76,20 +76,27 @@ public final class Fillager extends PathfinderMob {
      * this Fillager (it calls {@code discard()} internally), exactly like an ordinary despawn-over-target,
      * so the only felt cost is the bounded refill rate the reconciliation loop already enforces on the next
      * interval -- there is no separate "leave a gap" step to perform here.
+     *
+     * <p>The eligibility check (and therefore whether this returns a definitive result or falls through to
+     * {@code super}/PASS) MUST run identically on both sides, before any client/server branching: per
+     * NeoForge's interaction pipeline, ANY non-PASS {@code mobInteract} result -- including a client-side
+     * one -- is definitive and stops the game from then trying the other hand. An empty or below-cost main
+     * hand must therefore still return PASS (via {@code super}) on the client too, so a valid offhand
+     * emerald stack still gets its turn; unconditionally returning SUCCESS on the client regardless of what
+     * is held (the review-flagged bug this replaces) would silently swallow that offhand attempt.
      */
     @Override
     protected InteractionResult mobInteract(Player player, InteractionHand hand) {
-        if (level().isClientSide) {
-            return InteractionResult.SUCCESS;
-        }
         var stack = player.getItemInHand(hand);
         int cost = DynamicPopulationConfig.get().promotionEmeraldCost();
         if (!FillagerPromotion.canPromote(stack.is(Items.EMERALD), stack.getCount(), cost)) {
             return super.mobInteract(player, hand);
         }
-        stack.shrink(cost);
-        promote((ServerLevel) level());
-        return InteractionResult.SUCCESS;
+        if (!level().isClientSide) {
+            stack.shrink(cost);
+            promote((ServerLevel) level());
+        }
+        return InteractionResult.sidedSuccess(level().isClientSide);
     }
 
     private void promote(ServerLevel level) {
