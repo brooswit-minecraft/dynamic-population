@@ -2,18 +2,23 @@ package io.github.brooswitminecraft.dynamicpopulation.propagation;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.ToIntFunction;
 
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerReconciliation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.living.FinalizeSpawnEvent;
 import net.neoforged.neoforge.event.entity.player.TradeWithVillagerEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
@@ -43,9 +48,18 @@ public final class VillageActivityFeedback {
 
     private static void raise(ServerLevel level, BlockPos pos, int increment) {
         LevelField field = PopulationSimulation.field(level);
-        CellKey cell = field.cellAt(pos);
-        FillagerReconciliation.raiseLocalTargetAndActivate(cell, increment, field::get, field::set,
-            PopulationSimulation.active(level)::add);
+        raise(field.cellAt(pos), increment, field::get, field::set, PopulationSimulation.active(level)::add);
+    }
+
+    /**
+     * The real adapter every raise event hook calls into -- decoupled from {@link ServerLevel}/
+     * {@link LevelField} so a test can drive it with a plain map and set, the same way
+     * {@link FillagerReconciliation}'s own pure functions are tested, while still exercising the exact
+     * method the event handlers below call (not a re-derived copy of their logic).
+     */
+    static void raise(CellKey cell, int increment, ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write,
+            Consumer<CellKey> markActive) {
+        FillagerReconciliation.raiseLocalTargetAndActivate(cell, increment, read, write, markActive);
     }
 
     /** Trading (AC6): a player trading with any villager-family entity is positive village activity. */
@@ -58,35 +72,35 @@ public final class VillageActivityFeedback {
     }
 
     /**
-     * Breeding (AC6): a freshly-created baby Villager. {@code BabyEntitySpawnEvent} is deliberately NOT
-     * used here -- per NeoForge's own Javadoc it is fired from {@code Animal.spawnChildFromBreeding} and
-     * {@code Fox.spawnChildFromBreeding} only; the vanilla {@code VillagerMakeLove} behavior normal villager
-     * breeding actually runs through has no such hook in NeoForge's 1.21.1 patch set, so filtering that
-     * event to a {@code Villager} child would never fire for ordinary village breeding. A baby villager
-     * still reaches the level via the same {@code Level#addFreshEntity} path every other fresh entity does,
-     * so {@link EntityJoinLevelEvent} (already used below for golem creation) is the actually-accessible
-     * hook -- {@code loadedFromDisk() == false} excludes a baby merely loaded back in with its chunk, and
-     * {@code isBaby()} excludes an adult villager joining the level by any other means (a cured zombie
-     * villager, a /summon, a boat/portal transfer).
+     * Breeding (AC6): a Villager being spawned with {@link MobSpawnType#BREEDING}.
+     *
+     * <p>Two rejected approaches, in order, and why:
+     * <ul>
+     * <li>{@code BabyEntitySpawnEvent} -- per NeoForge's own Javadoc it is fired only from
+     * {@code Animal.spawnChildFromBreeding}/{@code Fox.spawnChildFromBreeding}; the vanilla
+     * {@code VillagerMakeLove} behavior normal villagers breed through has no such hook in NeoForge's
+     * 1.21.1 patch set, so it never fires for ordinary village breeding at all.</li>
+     * <li>{@code EntityJoinLevelEvent} filtered to a baby, non-disk-loaded {@code Villager} -- that flag
+     * only distinguishes a disk load from {@code PersistentEntitySectionManager.addNewEntity}, which also
+     * runs for a baby created any other way (a spawn egg used on an adult villager produces exactly the
+     * same {@code (loadedFromDisk=false, isBaby=true)} shape with no breeding at all).</li>
+     * </ul>
+     *
+     * <p>{@code VillagerMakeLove.breed} calls {@code Villager.getBreedOffspring}, which calls
+     * {@code finalizeSpawn(level, difficulty, MobSpawnType.BREEDING, null)} on the child before it ever
+     * joins the level -- NeoForge fires {@link FinalizeSpawnEvent} immediately before that vanilla call,
+     * exposing the exact {@link MobSpawnType} that caused the spawn as a genuine, one-time, per-entity
+     * signal (never reused for a spawn egg, which uses {@code MobSpawnType.SPAWN_EGG}, or a cured zombie
+     * villager, which uses {@code MobSpawnType.CONVERSION}).
      */
     @SubscribeEvent
-    public static void onBreeding(EntityJoinLevelEvent event) {
-        if (!(event.getEntity() instanceof Villager villager)
-                || !isOrdinaryVillagerBirth(event.loadedFromDisk(), villager.isBaby())
+    public static void onBreeding(FinalizeSpawnEvent event) {
+        if (!(event.getEntity() instanceof Villager) || event.getSpawnType() != MobSpawnType.BREEDING
                 || !(event.getLevel() instanceof ServerLevel level) || !overworld(level)) {
             return;
         }
-        raise(level, villager.blockPosition(), DynamicPopulationConfig.get().villageBreedingTargetIncrement());
-    }
-
-    /**
-     * The pure, unit-tested half of {@link #onBreeding}: a baby Villager that was NOT loaded from disk is a
-     * real birth (a villager merely loaded back in with its chunk, or an adult villager joining the level by
-     * any other means -- a cured zombie villager, a {@code /summon}, a boat/portal transfer -- must not
-     * count).
-     */
-    static boolean isOrdinaryVillagerBirth(boolean loadedFromDisk, boolean isBaby) {
-        return !loadedFromDisk && isBaby;
+        raise(level, BlockPos.containing(event.getX(), event.getY(), event.getZ()),
+            DynamicPopulationConfig.get().villageBreedingTargetIncrement());
     }
 
     /** Building (AC6): any block a player places. */
