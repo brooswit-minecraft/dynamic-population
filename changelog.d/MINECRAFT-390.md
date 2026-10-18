@@ -43,3 +43,9 @@ bump: minor
 ### Not implemented (explicit follow-up)
 - Natural King spawning/founding remains unimplemented -- `/dpop king settle` is still the only way to found
   one, for every faction.
+
+### Added (acceptance-evidence follow-up)
+- `/dpop fillager promote <tag>` -- a debug-only (op level 2) command that performs the exact same
+  Fillager-to-Villager conversion `Fillager#mobInteract`'s successful emerald-cost path already uses, without
+  requiring a connected player or a real item stack. Added solely so `scripts/smoke-server.py` can live-test
+  promoting a Fillager while it is actively mid-panic; no production gameplay path calls it.
