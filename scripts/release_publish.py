@@ -132,16 +132,32 @@ def gh_commit_for_ref_or_none(ref):
     """Resolve a git ref (here, always a tag) to the commit sha it actually
     points at via the GitHub API, which dereferences an annotated tag
     itself -- never trust a release field for this. Returns None only on
-    a confirmed 404 (the tag genuinely doesn't exist). Raises GhApiError
-    on any other failure (auth, network, rate limit, unexpected shape) --
-    never silently treated as "doesn't exist"."""
+    a confirmed "this ref does not exist" response. Raises GhApiError on
+    any other failure (auth, network, rate limit, unexpected shape) --
+    never silently treated as "doesn't exist".
+
+    GitHub's commits endpoint (`GET /repos/{owner}/{repo}/commits/{ref}`)
+    answers an unresolvable ref with HTTP 422 "No commit found for SHA:
+    <ref>", not 404 -- confirmed live against an actual nonexistent tag
+    (gh: No commit found for SHA: v0.2.0-alpha.1 (HTTP 422)). Both that
+    and an explicit 404 count as confirmed-absent.
+    """
     proc = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{ref}", "--jq", ".sha"],
                            capture_output=True, text=True)
     if proc.returncode == 0:
         return proc.stdout.strip()
-    if "HTTP 404" in proc.stderr or "Not Found" in proc.stderr:
+    if ref_confirmed_absent(proc.stderr):
         return None
     raise GhApiError(f"could not resolve ref {ref} to a commit (not a confirmed not-found): {proc.stderr.strip()}")
+
+
+def ref_confirmed_absent(stderr):
+    """True if `stderr` from the commits API confirms the ref simply does
+    not exist -- a 404, or the 422 "No commit found for SHA" GitHub
+    actually returns for an unresolvable ref (confirmed live against a
+    real nonexistent tag). False for anything else (auth, network, rate
+    limit), which the caller must treat as a hard failure, not absence."""
+    return "HTTP 404" in stderr or "Not Found" in stderr or "No commit found for SHA" in stderr
 
 
 def gh_download_asset(tag, jar_name, dest_dir):
