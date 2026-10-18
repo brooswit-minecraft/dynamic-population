@@ -514,22 +514,27 @@ def boot(root):
             if "DPOP_ATTACKER_CHECK_SETUP_DONE" in line:
                 break
 
-        # Density kept >=500 at the fixed starting point AND at the attacker's own current position every
-        # cycle (see refresh_density's own doc, and the regression-proof history above for why the latter
-        # matters) -- the ONLY thing that could still stop the attacker from ever acquiring/attacking this
-        # adjacent, always-eligible target is attackerEligible()'s own isPersistenceRequired() check. No
-        # grace-hit tolerance is needed here (unlike the old mid-chase design): PersistenceRequired is set
-        # from the entity's very first tick, before canUse() is ever evaluated for the first time, so there
-        # is no race window at all -- a hit observed at ANY point is a real regression.
+        # Density kept >=500 at the fixed starting point AND at BOTH entities' own current positions every
+        # cycle (see refresh_density's own doc, and the regression-proof history above for why anchoring to
+        # the attacker alone was still not enough) -- the ONLY thing that could still stop the attacker from
+        # ever acquiring/attacking this adjacent, always-eligible target is attackerEligible()'s own
+        # isPersistenceRequired() check. No grace-hit tolerance is needed here (unlike the old mid-chase
+        # design): PersistenceRequired is set from the entity's very first tick, before canUse() is ever
+        # evaluated for the first time, so there is no race window at all -- a hit observed at ANY point is
+        # a real regression.
+        #
+        # Anchoring density to the TARGET's own position too (not just the attacker's) matters for a
+        # DIFFERENT reason than combat eligibility: a CI run caught this check's target zombie slowly dying
+        # to ordinary SUN-BURN (not combat) after wandering out of the fixed starting point's >250-density
+        # radius, which left its own local override inactive. That is a legitimate, unrelated death this
+        # check must not let happen at all, since finding #2's fix (below) treats a missing/unreadable
+        # health sample as a hard failure -- exactly what an incidental environmental death would produce.
         hits_after_mark = 0
         health_missing = False
         for _ in range(10):
-            process.stdin.write(
-                'execute as @e[tag=dpop_attacker_check_villager] at @s run dpop set villager 1000\n'
-            )
-            process.stdin.write(
-                'execute as @e[tag=dpop_attacker_check_villager] at @s run dpop set zombie 1000\n'
-            )
+            for tag in ("dpop_attacker_check_villager", "dpop_attacker_check_zombie"):
+                process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set villager 1000\n')
+                process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set zombie 1000\n')
             captured = refresh_density(attacker_pos)
             captured += drain_for(1.5)
             health = query_health_unambiguous("dpop_attacker_check_zombie", "Zombie")
