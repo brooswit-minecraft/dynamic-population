@@ -1,6 +1,7 @@
 package io.github.brooswitminecraft.dynamicpopulation.reconciliation;
 
 import java.util.function.BiConsumer;
+import java.util.function.Predicate;
 import java.util.function.ToIntFunction;
 
 import io.github.brooswitminecraft.dynamicpopulation.propagation.CellKey;
@@ -29,16 +30,22 @@ public final class FillagerReconciliation {
      * rather than contributing a 0 as if it were a real, merely-empty cell. Without this clamp, a window that
      * crosses a world edge would undercount every cell inside the window too (e.g. a uniform field would
      * read as lower density near the top/bottom of the world purely because the window is clipped there).
+     *
+     * <p>{@code readable} is the same exclusion for a different reason: a cell inside the world whose anchor
+     * chunk is not loaded (or whose stored data is preserved-as-corrupt) is not a real zero either -- it is
+     * "unknown right now", not "known to be empty". {@code read} is never even called for a cell this
+     * predicate rejects, matching the layer clamp, which also skips the read entirely rather than reading
+     * and discarding.
      */
     public static int sampledTarget(CellKey centre, int horizontalRadius, int verticalRadius, int minLayer,
-            int maxLayer, ToIntFunction<CellKey> read) {
+            int maxLayer, Predicate<CellKey> readable, ToIntFunction<CellKey> read) {
         long total = 0;
         int count = 0;
         for (int x = -horizontalRadius; x <= horizontalRadius; x++) {
             for (int z = -horizontalRadius; z <= horizontalRadius; z++) {
                 for (int y = -verticalRadius; y <= verticalRadius; y++) {
                     CellKey cell = centre.offset(x, y, z);
-                    if (cell.layer() < minLayer || cell.layer() > maxLayer) {
+                    if (cell.layer() < minLayer || cell.layer() > maxLayer || !readable.test(cell)) {
                         continue;
                     }
                     total += Math.max(0, Math.min(Propagation.CAPACITY, read.applyAsInt(cell)));
@@ -50,8 +57,9 @@ public final class FillagerReconciliation {
     }
 
     public static Decision decide(CellKey centre, int current, Params params, int minLayer, int maxLayer,
-            ToIntFunction<CellKey> read) {
-        int target = sampledTarget(centre, params.horizontalRadius(), params.verticalRadius(), minLayer, maxLayer, read);
+            Predicate<CellKey> readable, ToIntFunction<CellKey> read) {
+        int target = sampledTarget(centre, params.horizontalRadius(), params.verticalRadius(), minLayer, maxLayer,
+            readable, read);
         int desired = (int) Math.round(target * params.fillagersPerFullCell() / (double) Propagation.CAPACITY);
         int missing = Math.max(0, desired - current);
         int excess = Math.max(0, current - desired);

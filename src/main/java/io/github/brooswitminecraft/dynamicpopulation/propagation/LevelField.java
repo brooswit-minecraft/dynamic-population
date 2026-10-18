@@ -70,6 +70,18 @@ public final class LevelField implements Propagation.Field {
         return record == null ? 0 : record.layerDensities().getOrDefault(cell.layer(), 0);
     }
 
+    /**
+     * Whether this cell's stored density can actually be read right now: its anchor chunk is loaded and its
+     * stored data is not preserved-as-corrupt. {@code get} returns 0 for a not-readable cell too, but that 0
+     * is not a real density -- it is "we don't know yet", distinct from a loaded cell with no entry for this
+     * layer (a genuine zero). Distinct from {@link #traversable}, which also requires an open/liquid block;
+     * a cell can be readable (density known) without being traversable, or vice versa is impossible since
+     * traversable already implies loaded(cell) != null.
+     */
+    public boolean readable(CellKey cell) {
+        return loaded(cell) != null;
+    }
+
     @Override
     public void set(CellKey cell, int value) {
         CellFieldRecord.Loaded record = loaded(cell);

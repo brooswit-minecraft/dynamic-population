@@ -53,7 +53,8 @@ public final class FillagerPopulationSimulation {
                 continue;
             }
             List<Fillager> residents = residents(level, field, cell);
-            var decision = FillagerReconciliation.decide(cell, residents.size(), params, 0, field.layers() - 1, field::get);
+            var decision = FillagerReconciliation.decide(cell, residents.size(), params, 0, field.layers() - 1,
+                field::readable, field::get);
             for (int i = 0; i < decision.despawn(); i++) {
                 residents.get(i).discard(); // ordinary despawn never changes the target.
             }
@@ -121,16 +122,17 @@ public final class FillagerPopulationSimulation {
     }
 
     /**
-     * AC9 unsafe-death classification. {@code Fillager.wasUnsafeLocationDeath()} only ever gets set for
-     * lava/fire/soul-fire at the feet (its own self-triggered kill); every other hazard this mod already
-     * treats as unsafe for spawning (see {@code hazard()}/{@code safeSpawn} above: cactus, campfire, soul
-     * campfire, sweet berry bush, wither rose) kills a Fillager through vanilla's own damage path instead,
-     * never setting that flag -- wither rose specifically kills via delayed wither-effect damage, not a
-     * feet-block check at all, so it could never set that flag even in principle. Classify those too, by
-     * the death's real {@code DamageType} registry key (stable; {@code msgId} is not -- {@code
-     * DamageTypes.CAMPFIRE} and {@code DamageTypes.IN_FIRE} share the msgId "inFire"), plus drowning and
-     * in-wall suffocation, which have no feet-block equivalent at all. {@link #isUnsafeDeathTypePath} is
-     * the pure, unit-tested half of this; it never receives storage.
+     * AC9 unsafe-death classification. {@code Fillager.wasUnsafeLocationDeath()} covers every hazard that is
+     * identified by WHERE the Fillager is standing (lava/fire/soul-fire, and wither rose, all checked by
+     * location in {@code Fillager.aiStep}) -- that is the only correct way to classify wither rose, since
+     * the actual kill comes from a delayed Wither status-effect tick whose {@code DamageType} ({@code
+     * DamageTypes.WITHER}) is indistinguishable from the same effect applied by a wither skeleton or the
+     * Wither boss; classifying by damage type there would misattribute an ordinary mob kill as a
+     * local-cell hazard death. Drowning and in-wall suffocation have no feet-block equivalent at all (no
+     * single block identifies them), so those two are classified by their real {@code DamageType} registry
+     * key instead (stable; {@code msgId} is not -- e.g. {@code DamageTypes.CAMPFIRE} and {@code
+     * DamageTypes.IN_FIRE} share the msgId "inFire", which is why registry key and not msgId is used here).
+     * {@link #isUnsafeDeathTypePath} is the pure, unit-tested half of this; it never receives storage.
      */
     private static boolean isUnsafeDeath(Fillager fillager, net.minecraft.world.damagesource.DamageSource source) {
         if (fillager.wasUnsafeLocationDeath()) {
@@ -146,7 +148,9 @@ public final class FillagerPopulationSimulation {
         return UNSAFE_DEATH_TYPE_PATHS.contains(damageTypePath);
     }
 
+    // Wither rose is deliberately NOT here: it is classified by location in Fillager.aiStep (see
+    // wasUnsafeLocationDeath) instead, because DamageTypes.WITHER cannot distinguish "stood on a wither
+    // rose" from "a wither skeleton or the Wither boss killed this mob".
     private static final Set<String> UNSAFE_DEATH_TYPE_PATHS = Set.of(
-        "lava", "in_fire", "on_fire", "hot_floor", "campfire", "cactus", "sweet_berry_bush", "drown", "in_wall",
-        "wither");
+        "lava", "in_fire", "on_fire", "hot_floor", "campfire", "cactus", "sweet_berry_bush", "drown", "in_wall");
 }

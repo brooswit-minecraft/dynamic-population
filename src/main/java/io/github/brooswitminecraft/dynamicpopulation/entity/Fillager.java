@@ -30,18 +30,39 @@ public final class Fillager extends PathfinderMob {
     @Override
     public void aiStep() {
         super.aiStep();
-        if (!level().isClientSide && isUnsafe(blockPosition())) {
-            unsafeLocationDeath = true;
+        if (level().isClientSide) {
+            return;
+        }
+        BlockPos pos = blockPosition();
+        // Overwritten every tick, never OR-latched: a wither rose only stings on contact, then lets its
+        // damage-over-time effect finish the kill ~2s later, so this flag must track CURRENT presence, not
+        // "was ever on a hazard" -- otherwise a Fillager that survives stepping off the rose would carry a
+        // stale true into a later, unrelated death (e.g. a player or mob kill) and misattribute it as AC9.
+        // Lava/fire/soul-fire are the opposite case (instant kill, same tick), so overwriting changes nothing
+        // for them.
+        boolean lethal = isLethalHazard(pos);
+        unsafeLocationDeath = lethal || isOnWitherRose(pos);
+        if (lethal) {
             hurt(damageSources().generic(), Float.MAX_VALUE);
         }
     }
 
-    private boolean isUnsafe(BlockPos pos) {
+    private boolean isLethalHazard(BlockPos pos) {
         var state = level().getBlockState(pos);
         return state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA) || state.is(net.minecraft.world.level.block.Blocks.FIRE)
             || state.is(net.minecraft.world.level.block.Blocks.SOUL_FIRE);
     }
 
+    private boolean isOnWitherRose(BlockPos pos) {
+        return level().getBlockState(pos).is(net.minecraft.world.level.block.Blocks.WITHER_ROSE);
+    }
+
+    /**
+     * Whether this Fillager is (as of this tick) standing on an unsafe location, for AC9. Deliberately
+     * location-based rather than damage-type-based for wither rose: {@code DamageTypes.WITHER} is also the
+     * damage dealt by the Wither status effect from a wither skeleton or the Wither boss, which must NOT
+     * count as a local-cell hazard death.
+     */
     public boolean wasUnsafeLocationDeath() {
         return unsafeLocationDeath;
     }
