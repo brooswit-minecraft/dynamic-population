@@ -15,5 +15,14 @@ public final class DynamicPopulationClient {
     @SubscribeEvent
     public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
         event.registerEntityRenderer(DynamicPopulationEntities.FILLAGER.get(), FillagerRenderer::new);
+        event.registerEntityRenderer(DynamicPopulationEntities.VILLAGER_KING.get(), VillagerKingRenderer::new);
+        // Zombie/Skeleton Kings extend the vanilla classes directly, so vanilla's own rendering assets
+        // (generic.scale alone drives the bigger size -- see DynamicPopulationEntities) are reused via a
+        // thin renderer mirroring vanilla's own constructor (ZombieRenderer itself is not generic, so
+        // ZombieKingRenderer reuses its generic AbstractZombieRenderer base instead; SkeletonRenderer IS
+        // already generic over AbstractSkeleton, so it is reused directly).
+        event.registerEntityRenderer(DynamicPopulationEntities.ZOMBIE_KING.get(), ZombieKingRenderer::new);
+        event.registerEntityRenderer(DynamicPopulationEntities.SKELETON_KING.get(),
+            net.minecraft.client.renderer.entity.SkeletonRenderer::new);
     }
 }

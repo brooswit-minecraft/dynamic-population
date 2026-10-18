@@ -7,6 +7,7 @@ import java.util.Set;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.entity.DynamicPopulationEntities;
 import io.github.brooswitminecraft.dynamicpopulation.entity.Fillager;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerReconciliation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -45,8 +46,17 @@ public final class FillagerPopulationSimulation {
                 cells.add(field.cellAt(fillager.blockPosition()));
             }
         }
+        // MINECRAFT-390 (settled spec; review fix P1-1): day/night spawn-RATE multiplier -- scales ONLY
+        // the refill limit (the config's own documented global per-interval rate), via SpawnRateBudget's
+        // fractional-carry accumulator so the LONG-RUN rate is correct even when any single interval's
+        // whole-number allowance floors to 0 (e.g. the default refill limit of 1 at a 0.25x/0.5x phase).
+        // spawnCapPerInterval is deliberately left UNSCALED: it is a per-cell burst cap, not the rate
+        // governor. Never touches despawnCapPerInterval or density/target accounting. Computed from game
+        // ticks only (never wall-clock). See DayNightSpawnRate's class doc for the Fillager 12h/12h alignment.
+        long dayTime = level.getDayTime();
+        int scaledRefill = SpawnRateBudget.nextRefillAllowance(level, Faction.VILLAGER, config.reconciliationRefillPerInterval(), dayTime);
         var params = new FillagerReconciliation.Params(config.samplingHorizontalRadius(), config.samplingVerticalRadius(),
-            config.fillagersPerFullCell(), config.reconciliationRefillPerInterval(), config.spawnCapPerInterval(),
+            config.fillagersPerFullCell(), scaledRefill, config.spawnCapPerInterval(),
             config.despawnCapPerInterval());
         for (CellKey cell : cells) {
             if (field.blockedReason(cell) != null) {

@@ -1,6 +1,8 @@
 package io.github.brooswitminecraft.dynamicpopulation.entity;
 
+import io.github.brooswitminecraft.dynamicpopulation.combat.PopulationCombatTargetGoal;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerPromotion;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -10,6 +12,8 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.world.entity.ai.goal.PanicGoal;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Items;
@@ -18,9 +22,40 @@ import net.minecraft.world.level.Level;
 /**
  * A deliberately separate, lightweight population entity. It has no Villager brain, profession, trades, or
  * persistent history; the client presentation is intentionally the nitwit-shaped villager presentation only.
+ *
+ * <p>Deliberately does NOT extend {@code net.minecraft.world.entity.npc.AbstractVillager}: that would force
+ * it to implement {@code Merchant} and drag in trading machinery this mod explicitly keeps out. See
+ * {@code io.github.brooswitminecraft.dynamicpopulation.combat.FillagerTargetCompat} for how vanilla villager
+ * attackers are still made to target this entity despite that, without any shared supertype.
  */
 public final class Fillager extends PathfinderMob {
     private boolean unsafeLocationDeath;
+
+    /**
+     * Hurt-triggered flee (MINECRAFT-389, AC2): the EXACT vanilla {@link PanicGoal} sheep/cow/pig already
+     * use, unmodified -- no custom flee state machine, since vanilla's own is already a well-tested,
+     * lightweight animal-style navigation/avoidance goal and the ticket names it as the reference. Its
+     * default trigger set is {@code DamageTypeTags.PANIC_CAUSES} (player/mob melee, projectiles, explosions,
+     * magic, etc. -- confirmed against the vanilla data pack, NOT the self-inflicted {@code generic} source
+     * {@link #isLethalHazard} uses for an instant hazard kill, which is correct: that case never leaves a
+     * survivor to flee). {@code PanicGoal} only ever touches navigation/movement (its one {@code Goal.Flag} is
+     * {@code MOVE}); it never sets a combat target, so a Fillager (which also gets NO {@code targetSelector}
+     * goals at all, below) structurally cannot retaliate. Priority 1 (goalSelector's highest), matching every
+     * vanilla animal's own placement, so fleeing always preempts any other movement goal.
+     *
+     * <p>Speed modifier 1.25 matches vanilla Sheep/Pig (Cow uses 2.0; Chicken uses 1.4) -- chosen over Cow's
+     * higher value because a Fillager is villager-shaped/human-sized, not ox-shaped, and 1.25 is the more
+     * common vanilla choice for a similarly-proportioned animal. No specific number was mandated by the
+     * ticket.
+     *
+     * <p>Recovery, blocked-route, and attacker-removal handling all come from vanilla's own
+     * {@code PanicGoal}/navigation unmodified: {@code canContinueToUse()} ends the panic the moment
+     * navigation completes or fails to find a path (a cornered Fillager simply stays put, like a cornered
+     * animal), and the goal never reads or dereferences the attacking entity at all -- only
+     * {@code getLastDamageSource()}'s damage-type tag membership -- so the attacker's death, removal, or a
+     * chunk/entity reload cannot leave it in a broken state.
+     */
+    private static final double PANIC_SPEED_MODIFIER = 1.25;
 
     public Fillager(EntityType<? extends PathfinderMob> type, Level level) {
         super(type, level);
@@ -31,9 +66,29 @@ public final class Fillager extends PathfinderMob {
         return EntityType.Builder.of(Fillager::new, MobCategory.CREATURE).sized(0.6F, 1.95F).clientTrackingRange(8);
     }
 
+    /**
+     * MINECRAFT-390 scope item 6: the ONE narrowly-scoped exception to MINECRAFT-389's "never retaliate or
+     * acquire a combat target" rule -- a {@code targetSelector} goal ({@link PopulationCombatTargetGoal})
+     * that can only ever acquire a target when THIS Fillager's own local Villager-faction density is at or
+     * above {@code PopulationCombatEligibility.THRESHOLD_PPT} (500 on the existing 0..1000 scale), and only
+     * against an opposing-faction NON-PERSISTENT filler (see {@code PopulationCombatTargeting}). Below that
+     * threshold the goal's own {@code canUse()} always returns false, so a Fillager that never crosses it
+     * behaves EXACTLY as MINECRAFT-389 specified: it still never retaliates or acquires a target. This is
+     * additive only -- it does not touch {@code FillagerTargetCompat} (other mobs targeting a Fillager) or
+     * loosen any check in {@link PanicGoal} itself.
+     *
+     * <p>{@link MeleeAttackGoal} is the attack-EXECUTION half this goal needs but Fillager never had before
+     * (a {@code targetSelector} goal only sets {@code getTarget()}; nothing walks toward or swings at that
+     * target without a {@code goalSelector} goal that reads it) -- see {@link PopulationCombatTargetGoal}'s
+     * own class doc for the full goal-priority writeup (PanicGoal at goalSelector priority 1 vs this at
+     * priority 2, sharing the {@code MOVE} flag, so fleeing always preempts attacking whenever both could
+     * apply).
+     */
     @Override
     protected void registerGoals() {
-        // Fillagers are background population, not AI villagers.
+        this.goalSelector.addGoal(1, new PanicGoal(this, PANIC_SPEED_MODIFIER));
+        this.goalSelector.addGoal(2, new MeleeAttackGoal(this, 1.0, true));
+        this.targetSelector.addGoal(1, new PopulationCombatTargetGoal(this, Faction.VILLAGER));
     }
 
     @Override
