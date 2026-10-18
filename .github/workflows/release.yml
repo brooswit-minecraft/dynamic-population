@@ -65,6 +65,12 @@ jobs:
       - name: Run script tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
+      - name: Validate dispatch inputs
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          DISPATCH_NOTES: ${{ github.event.inputs.notes }}
+        run: python3 scripts/release_publish.py validate-dispatch-pair "$DISPATCH_VERSION" "$DISPATCH_NOTES"
+
       - name: Resolve version
         id: version
         env:

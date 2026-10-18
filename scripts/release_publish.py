@@ -49,6 +49,21 @@ def validate_notes(notes):
     return notes
 
 
+def validate_dispatch_pair(dispatch_version, dispatch_notes):
+    """A workflow_dispatch version and notes input must travel together.
+    version set with notes blank would silently fall back to the old
+    scaffold CHANGELOG.md for an explicit new version; notes set with
+    version blank would publish explicit notes under version.txt's
+    (wrong) version. Only "both blank" (fall back to version.txt/
+    CHANGELOG.md entirely) or "both set" (fully explicit) are valid."""
+    version_set = bool((dispatch_version or "").strip())
+    notes_set = bool((dispatch_notes or "").strip())
+    if version_set != notes_set:
+        raise ValueError(
+            "workflow_dispatch's version and notes inputs must both be set or both left "
+            f"blank (got version={'set' if version_set else 'blank'}, notes={'set' if notes_set else 'blank'})")
+
+
 def jar_declares_version(jar_path, expected_version):
     """True if the jar's baked neoforge.mods.toml declares exactly
     `expected_version` -- the jar/tag/version agreement check."""
@@ -68,20 +83,73 @@ def sha256_of(path):
     return digest.hexdigest()
 
 
-def existing_release_is_identical(existing_target_sha, new_commit_sha, existing_jar_sha256, new_jar_sha256):
+def existing_release_is_identical(tag_commit_sha, target_commitish, new_commit_sha, existing_jar_sha256, new_jar_sha256):
     """True only if a pre-existing release for this tag is provably the same
     commit AND the same jar bytes as what we are about to publish -- the
     only condition under which a retry may treat it as already-done.
-    Same-commit-different-jar, same-jar-different-commit, and
-    both-different are all NOT identical and must fail, never be
+
+    Checks the tag's OWN resolved commit (`tag_commit_sha`), not just the
+    release's `targetCommitish`: `gh release create --target` does not move
+    a pre-existing tag, so a tag left over at another commit can make a
+    release's targetCommitish agree with the current build while the tag
+    itself -- the thing an installer actually downloads by ref -- still
+    points elsewhere. All three of tag commit, targetCommitish, and jar
+    sha256 must agree; any single disagreement must fail, never be
     silently accepted or overwritten.
     """
-    return existing_target_sha == new_commit_sha and existing_jar_sha256 == new_jar_sha256
+    return (tag_commit_sha == new_commit_sha
+            and target_commitish == new_commit_sha
+            and existing_jar_sha256 == new_jar_sha256)
 
 
-def _gh_json(*args):
-    out = subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
-    return json.loads(out)
+class ReleaseNotFound(Exception):
+    """A confirmed 404: the tag/release does not exist. Distinct from
+    GhApiError so callers never mistake an auth/network failure for
+    "safe to create"."""
+
+
+class GhApiError(Exception):
+    """gh/the GitHub API failed in a way that is NOT a confirmed 404 --
+    auth, network, rate limit, unexpected response shape. Callers must
+    propagate this and fail closed, never fall back to treating it as
+    "release doesn't exist"."""
+
+
+def gh_release_view(tag):
+    """Return `{targetCommitish, assets}` for the release tagged `tag`.
+    Raises ReleaseNotFound only on gh's own confirmed "release not found"
+    message; any other failure raises GhApiError."""
+    proc = subprocess.run(["gh", "release", "view", tag, "--json", "targetCommitish,assets"],
+                           capture_output=True, text=True)
+    if proc.returncode == 0:
+        return json.loads(proc.stdout)
+    if "release not found" in proc.stderr.lower():
+        raise ReleaseNotFound(tag)
+    raise GhApiError(f"gh release view {tag} failed (not a confirmed not-found): {proc.stderr.strip()}")
+
+
+def gh_resolve_ref_commit(ref):
+    """Resolve a git ref (here, always a tag) to the commit sha it actually
+    points at via the GitHub API, which dereferences an annotated tag
+    itself -- never trust a release field for this. Raises GhApiError on
+    any failure (including a 404, since this is only ever called for a
+    tag we were just told has a release, so a 404 here is itself an
+    inconsistency to fail on, not a "doesn't exist yet" signal)."""
+    proc = subprocess.run(["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{ref}", "--jq", ".sha"],
+                           capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise GhApiError(f"could not resolve tag {ref} to a commit: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def gh_download_asset(tag, jar_name, dest_dir):
+    subprocess.run(["gh", "release", "download", tag, "--pattern", jar_name, "--dir", dest_dir], check=True)
+
+
+def gh_create_release(tag, jar_path, commit_sha, notes):
+    subprocess.run(["gh", "release", "create", tag, jar_path, "--target", commit_sha,
+                     "--title", f"Dynamic Population {tag.lstrip('v')}",
+                     "--notes", notes, "--prerelease"], check=True)
 
 
 def resolve_version(dispatch_version, version_file):
@@ -95,44 +163,47 @@ def resolve_notes(dispatch_notes, changelog_file):
 def publish_or_verify_identical(tag, commit_sha, jar_path, notes):
     """Create the immutable GitHub release for `tag`, or -- if it already
     exists -- verify it is identical to what we would publish and exit
-    cleanly; mismatches raise SystemExit(1) and never touch the release."""
-    existing = subprocess.run(["gh", "release", "view", tag, "--json", "targetCommitish,assets"],
-                               capture_output=True, text=True)
-    if existing.returncode != 0:
-        subprocess.run(["gh", "release", "create", tag, jar_path, "--target", commit_sha,
-                         "--title", f"Dynamic Population {tag.lstrip('v')}",
-                         "--notes", notes, "--prerelease"], check=True)
+    cleanly. Any mismatch, or any API failure that isn't a confirmed
+    not-found, raises and never touches the release (fail closed)."""
+    try:
+        existing = gh_release_view(tag)
+    except ReleaseNotFound:
+        gh_create_release(tag, jar_path, commit_sha, notes)
         print(f"published {tag} @ {commit_sha}")
         return
 
-    data = json.loads(existing.stdout)
-    assets = data.get("assets") or []
+    assets = existing.get("assets") or []
     jar_name = Path(jar_path).name
     asset = next((a for a in assets if a["name"] == jar_name), None)
     if asset is None:
         raise SystemExit(f"FAIL: release {tag} already exists but has no asset named {jar_name} -- "
                           "not a retry of this exact build; refusing to touch it")
 
+    tag_commit = gh_resolve_ref_commit(tag)
+
     with tempfile.TemporaryDirectory() as tmp:
-        downloaded = Path(tmp) / jar_name
-        subprocess.run(["gh", "release", "download", tag, "--pattern", jar_name, "--dir", tmp], check=True)
-        existing_sha = sha256_of(downloaded)
+        gh_download_asset(tag, jar_name, tmp)
+        existing_sha = sha256_of(Path(tmp) / jar_name)
 
     new_sha = sha256_of(jar_path)
-    if existing_release_is_identical(data["targetCommitish"], commit_sha, existing_sha, new_sha):
+    if existing_release_is_identical(tag_commit, existing["targetCommitish"], commit_sha, existing_sha, new_sha):
         print(f"release {tag} already exists for this exact commit and jar -- skipping re-publish.")
         return
 
     raise SystemExit(
         f"FAIL: release {tag} already exists but is NOT identical to this build "
-        f"(existing target {data['targetCommitish']} vs {commit_sha}, "
-        f"existing jar sha256 {existing_sha} vs {new_sha}). Refusing to overwrite an "
-        "immutable release; a tag must never be re-published with different content.")
+        f"(tag {tag} resolves to commit {tag_commit}, release targetCommitish {existing['targetCommitish']}, "
+        f"new commit {commit_sha}; existing jar sha256 {existing_sha} vs new {new_sha}). Refusing to overwrite "
+        "an immutable release; a tag must never be re-published with different content.")
 
 
 if __name__ == "__main__":
     command, *args = sys.argv[1:]
-    if command == "resolve-version":
+    if command == "validate-dispatch-pair":
+        dispatch_version, dispatch_notes = args
+        validate_dispatch_pair(dispatch_version, dispatch_notes)
+        print("OK: dispatch version/notes pair is valid")
+    elif command == "resolve-version":
         print(resolve_version(*args))
     elif command == "resolve-notes":
         dispatch_notes_file, changelog_file = args
