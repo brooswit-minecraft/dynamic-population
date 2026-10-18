@@ -70,6 +70,20 @@ import net.neoforged.neoforge.event.tick.EntityTickEvent;
  * extinguishes and a genuinely new burn can start fresh. See {@link FireIgnitionTracking} for the full
  * reasoning and the pure, directly-unit-tested decision logic.
  *
+ * <p><b>Round 6 re-review fixes:</b> two more issues in this same latch, both at the caller (this class)
+ * level, not in {@link FireIgnitionTracking}'s own reasoning:
+ * <ol>
+ * <li>The latch was keying "externally caused" on whether {@code overrideActive} happened to be true at
+ * ignition time, instead of on direct cause evidence alone -- a genuinely sun-caused burn that started
+ * before the density override activated got permanently mislabeled "protected" and never suppressed even
+ * after the override turned on mid-burn. Fixed in {@link FireIgnitionTracking#decide} itself; see that
+ * class's doc for the full reasoning.</li>
+ * <li>{@link #LAST_FIRE_TICKS} was snapshotted BEFORE {@code mob.clearFire()} was called, so an immediate
+ * same-duration re-ignition on the very next tick compared against the stale pre-clear value and escaped
+ * fresh-ignition detection entirely. Fixed by snapshotting {@link FireIgnitionTracking#snapshotFireTicksAfterThisTick}
+ * AFTER this method has already acted on the current tick's decision.</li>
+ * </ol>
+ *
  * <p><b>Remaining honestly-scoped gap:</b> this positively rules out the ignition paths this mod knows about
  * (fire/soul-fire/lava contact, Flame-enchanted projectiles, melee Fire Aspect); it cannot rule out a MODDED
  * ignition source using some other mechanism entirely, nor a vanilla path this review missed. A true 100%
@@ -210,7 +224,12 @@ public final class SunImmunityTicking {
             return;
         }
         int currentFireTicks = mob.getRemainingFireTicks();
-        Integer previousFireTicks = LAST_FIRE_TICKS.put(mob, currentFireTicks);
+        // Review fix (P2, round 6): PEEK the previous snapshot here, do NOT overwrite it yet -- the value
+        // stored for the NEXT tick must reflect what happens THIS tick (including a clearFire() call
+        // below), not this tick's pre-clear currentFireTicks. See FireIgnitionTracking.
+        // snapshotFireTicksAfterThisTick's doc for why recording it before the clear let an immediate
+        // same-duration re-ignition on the very next tick escape fresh-ignition detection entirely.
+        Integer previousFireTicks = LAST_FIRE_TICKS.get(mob);
         boolean previouslyProtected = Boolean.TRUE.equals(PROTECTED_BURN.get(mob));
         boolean knownNonSunCause = touchingFireOrLava(level, mob) || recentFlameHit(level, mob) || recentMeleeFireAspectHit(level, mob);
 
@@ -229,6 +248,10 @@ public final class SunImmunityTicking {
         if (decision.clearFire()) {
             mob.clearFire();
         }
+        // Review fix (P2, round 6): record the snapshot for the NEXT tick AFTER acting on this tick's
+        // decision, using the mob's ACTUAL post-action remaining-fire-ticks (0 if clearFire() was just
+        // called), never the pre-clear currentFireTicks captured at the top of this method.
+        LAST_FIRE_TICKS.put(mob, FireIgnitionTracking.snapshotFireTicksAfterThisTick(currentFireTicks, decision.clearFire()));
     }
 
     private static boolean isKing(Entity entity) {

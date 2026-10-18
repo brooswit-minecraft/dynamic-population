@@ -13,6 +13,7 @@ shutting down cleanly within the timeout. Any of those turns this check red.
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -259,7 +260,33 @@ def boot(root):
             process.stdin.write('kill @e[type=dynamicpopulation:fillager,tag=!dpop_test_entity]\n')
             process.stdin.write('kill @e[type=minecraft:zombie,tag=dpop_zombie_filler,tag=!dpop_test_entity]\n')
             process.stdin.flush()
-            drain_for(0.3)
+            return drain_for(0.3)
+
+        def extract_combat_hits(captured_lines, victim_tag):
+            """Review fix (P2, round 6, smoke-test harness finding #1): parses CombatDamageLogging's
+            'DPOP_COMBAT_HIT' server-log lines for every hit landed on the entity carrying victim_tag,
+            returning the ATTACKER's own logged scoreboard tags for each such hit (a set[str] per hit,
+            possibly empty if the damage had no entity source at all, e.g. environmental).
+
+            This replaces the previous "some untagged Fillager existed somewhere nearby" correlation with
+            real per-hit attribution: the caller can check whether a specific hit's attacker tag-set
+            contains the exact tag given to the ONE entity under test, which is proof, not inference."""
+            hits = []
+            pattern = re.compile(r"victim_tags=(\S+) attacker=\[(.*?)\] damage=")
+            for line in captured_lines:
+                if "DPOP_COMBAT_HIT" not in line:
+                    continue
+                match = pattern.search(line)
+                if not match:
+                    continue
+                victim_tags = set(match.group(1).split(","))
+                if victim_tag not in victim_tags:
+                    continue
+                attacker_field = match.group(2)
+                tag_match = re.search(r"tags=(\S+)$", attacker_field)
+                attacker_tags = set(tag_match.group(1).split(",")) if tag_match else set()
+                hits.append(attacker_tags)
+            return hits
 
         villager_health = query_health_unambiguous("dpop_battle_villager", "entity.dynamicpopulation.fillager")
         zombie_health = query_health_unambiguous("dpop_battle_zombie", "Zombie")
@@ -430,178 +457,119 @@ def boot(root):
         process.stdin.flush()
         drain_for(1)
 
-        # MINECRAFT-390 review fix (P1, round 2, attacker side): a filler that becomes persistent while
-        # ACTIVELY ATTACKING (not just a potential target) must immediately stop initiating/continuing
-        # population-combat itself. Set up a Fillager (eligible attacker, villager density high) against a
-        # non-persistent zombie filler, wait for confirmed engagement (the zombie's health actually drops,
-        # proving the Fillager's MeleeAttackGoal is really landing hits), THEN mark the FILLAGER persistent
-        # mid-goal via /data merge entity (no UUID extraction needed -- a single-match selector works
-        # directly as the target), and assert the zombie's health never drops again afterward.
+        # MINECRAFT-390 review fix (P1, round 2, attacker side): a filler that is (or becomes) persistent
+        # must never initiate/continue population-combat itself -- attackerEligible() in
+        # PopulationCombatTargetGoal (a single `!mob.isPersistenceRequired()` check, shared by both
+        # canUse() and canContinueToUse()) is what enforces this.
+        #
+        # Round 6 re-review, regression-proof history: the ORIGINAL version of this check marked the
+        # attacker persistent MID-CHASE (after confirming live engagement), then polled for further damage.
+        # Proving that design could actually catch a real regression (per the review's explicit request:
+        # temporarily hard-code attackerEligible() to always return true and confirm the check fails) took
+        # SIX consecutive live-server attempts, each exposing a different confound that let even the
+        # deliberately-broken build pass:
+        # 1. An 8-cycle (~10s), then a 30-cycle (~60s), poll window: STILL a false PASS. Root cause: after
+        #    the first hit's knockback separates the two entities, vanilla's pathfinding re-approach is too
+        #    slow/unreliable to guarantee a second engagement within any practical window, broken build or
+        #    not -- the window alone gave zero discriminating power.
+        # 2. Forcibly teleporting the attacker to melee range every cycle: STILL a false PASS, and worse --
+        #    the teleporting itself visibly broke BOTH sides' combat AI (even the ZOMBIE's own attack,
+        #    unrelated to attackerEligible(), stopped landing hits once teleporting started).
+        # 3. Topping up the attacker's health every cycle (removing a confound where it was simply dying to
+        #    the target's retaliation before it could prove anything): STILL a false PASS. Root cause:
+        #    refresh_density only re-affirms density at the scenario's FIXED starting coordinate, not
+        #    wherever natural AI had since carried the combatants -- the attacker's own local density
+        #    reading could legitimately (if incidentally) fall below threshold.
+        # 4. Also re-affirming density at the attacker's OWN current position every cycle: STILL a false
+        #    PASS. Root cause (found by reading {@code PopulationCombatTargetGoal}'s own class doc): the
+        #    Fillager's pre-existing MINECRAFT-389 PanicGoal (flee-on-hurt) sits at goalSelector priority 1,
+        #    ABOVE the MeleeAttackGoal this story adds at priority 2, and ALWAYS preempts it while recently
+        #    hurt -- since the zombie kept re-hurting the marked attacker every cycle, it was fleeing, not
+        #    attacking, almost the entire time. Correct, pre-existing, INTENDED behaviour from a prior
+        #    story, not a bug in this check or in attackerEligible().
+        #
+        # Every one of those is a real property of live Minecraft combat AI that a mid-chase design has no
+        # practical way to fully neutralise via blackbox server commands without either disturbing the AI
+        # further (teleporting) or accumulating an ever-longer list of confounds to chase. Rather than add
+        # a fifth patch on top of four, this check was REDESIGNED to test the exact same single-line
+        # attackerEligible() check -- shared by canUse() and canContinueToUse(), so there is no behavioural
+        # difference between "checked once at acquisition" and "checked mid-chase" for THIS method -- from
+        # a cold start instead: mark the attacker PersistenceRequired BEFORE it is ever given a target, then
+        # see whether it ever initiates combat at all. This mirrors the TARGET-side persistence check just
+        # above (proven reliable, many times, in this very script) instead of fighting live melee-AI
+        # dynamics on the attacker side too.
         attacker_pos = "600 -59 0"
+        process.stdin.write(
+            f'summon dynamicpopulation:fillager 601 -59 0 '
+            f'{{Tags:["dpop_attacker_check_villager","dpop_test_entity"],PersistenceRequired:1b}}\n'
+        )
         process.stdin.write(f'summon minecraft:zombie 600 -59 0 {{Tags:["dpop_zombie_filler","dpop_attacker_check_zombie","dpop_test_entity"]}}\n')
-        process.stdin.write(f'summon dynamicpopulation:fillager 601 -59 0 {{Tags:["dpop_attacker_check_villager","dpop_test_entity"]}}\n')
         process.stdin.write('say DPOP_ATTACKER_CHECK_SETUP_DONE\n')
         process.stdin.flush()
         deadline = time.monotonic() + 30
         while True:
             line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
             if line is None:
-                raise RuntimeError("Server exited while setting up the attacker mid-goal persistence check")
+                raise RuntimeError("Server exited while setting up the attacker persistence check")
             if "DPOP_ATTACKER_CHECK_SETUP_DONE" in line:
                 break
-        engaged = False
-        last_zombie_health = 20.0
-        for _ in range(18):
-            refresh_density(attacker_pos)
-            health = query_health_unambiguous("dpop_attacker_check_zombie", "Zombie")
-            if health is None:
-                # The zombie died before we got to mark the attacker persistent -- combat clearly works,
-                # but this specific mid-goal-persistence scenario is inconclusive (nothing left to protect).
-                print(
-                    "Attacker mid-goal persistence check: the target died before the attacker could be "
-                    "marked persistent -- combat engagement is confirmed, but this specific regression "
-                    "check is inconclusive for this run.", flush=True,
-                )
-                break
-            if health < last_zombie_health:
-                engaged = True
-                last_zombie_health = health
-                break
-            last_zombie_health = health
-        else:
-            print(
-                "Attacker mid-goal persistence check: INCONCLUSIVE -- no engagement observed within the "
-                "poll window (AI pathing/timing variance); the attacker-persistence fix itself was not "
-                "exercised live in this run.", flush=True,
-            )
-        if engaged:
+
+        # Density kept >=500 at the fixed starting point AND at the attacker's own current position every
+        # cycle (see refresh_density's own doc, and the regression-proof history above for why the latter
+        # matters) -- the ONLY thing that could still stop the attacker from ever acquiring/attacking this
+        # adjacent, always-eligible target is attackerEligible()'s own isPersistenceRequired() check. No
+        # grace-hit tolerance is needed here (unlike the old mid-chase design): PersistenceRequired is set
+        # from the entity's very first tick, before canUse() is ever evaluated for the first time, so there
+        # is no race window at all -- a hit observed at ANY point is a real regression.
+        hits_after_mark = 0
+        health_missing = False
+        for _ in range(10):
             process.stdin.write(
-                'data merge entity @e[tag=dpop_attacker_check_villager,limit=1] {PersistenceRequired:1b}\n'
+                'execute as @e[tag=dpop_attacker_check_villager] at @s run dpop set villager 1000\n'
             )
-            process.stdin.write('say DPOP_ATTACKER_MARKED_PERSISTENT\n')
-            process.stdin.flush()
-            deadline = time.monotonic() + 10
-            while True:
-                line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
-                if line is None:
-                    raise RuntimeError("Server exited while marking the attacker persistent")
-                if "DPOP_ATTACKER_MARKED_PERSISTENT" in line:
-                    break
-
-            # Review fix (P2, re-review): the PREVIOUS version of this check zeroed villager density the
-            # moment the attacker was marked persistent, to starve reconciliation of its reason to keep
-            # spawning stragglers during the post-mark window -- see the longer explanation below for why
-            # that made the check self-defeating. This comment documents a SECOND iteration on the fix,
-            # driven by a real CI failure on the first iteration (not a local assumption): sweeping/checking
-            # for stragglers only once per ~1.3s outer health-poll cycle left a window wide enough for
-            # reconciliation to spawn AND land a hit with an untagged straggler entirely BETWEEN two
-            # consecutive checks -- confirmed directly in that CI run's own server log, which showed
-            # "No entity was found" (0 stragglers) at one straggler-presence check, immediately followed
-            # under a second later by "Killed 4 entities"/"Killed 3 entities" at the NEXT cycle's sweep --
-            # i.e. a burst of stragglers spawned, attacked, and were swept entirely inside one single outer
-            # cycle, invisible to a check that only samples once per cycle. The fix below shrinks that
-            # window by two orders of magnitude (checking/sweeping every ~0.2s instead of ~1.3s) rather than
-            # just re-tuning a tolerance number.
-            # moment the attacker was marked persistent, to starve reconciliation of its reason to keep
-            # spawning stragglers during the post-mark window. That made the check SELF-DEFEATING: with
-            # density zeroed, PopulationCombatTargetGoal#canContinueToUse would ALSO return false via its
-            # OWN, pre-existing `PopulationCombatEligibility.active(localDensity)` check -- the exact same
-            # density-threshold gate the OLD, pre-fix code already had, before the persistence-revalidation
-            # fix was ever written. In other words: even the OLD, buggy code (which never looked at
-            # isPersistenceRequired() at all) would ALSO have stopped the attacker in this exact test, for
-            # an entirely unrelated reason. The test could not actually distinguish "the persistence fix
-            # works" from "density merely dropped below threshold", so it proved nothing about the thing
-            # it was meant to regression-test.
-            #
-            # Fixed by keeping density >=500 for the ENTIRE post-mark window (via refresh_density, the same
-            # helper the pre-mark engagement phase itself already uses) -- the ONLY thing that can now stop
-            # the attacker is attackerEligible()'s own isPersistenceRequired() check, since the density
-            # gate stays satisfied throughout. This necessarily brings back reconciliation's own straggler
-            # spawning (refresh_density's doc explains why sustained high density causes that), so simply
-            # counting hits again would be exactly as uninformative. Instead, every poll cycle now also
-            # checks whether an untagged (non-test) Fillager exists THAT cycle, before refresh_density's own
-            # sweep removes it -- giving a real, decisive attribution for any hit observed: a hit that lands
-            # while a straggler was observably present has an alternative, already-documented explanation
-            # (the straggler, not the marked-persistent attacker); a hit with NO straggler present has no
-            # explanation left except the marked attacker itself, which attackerEligible() should have
-            # excluded -- a genuine regression, not a race.
-            def sweep_and_check_straggler(pos, rounds=6, interval=0.2):
-                """Repeatedly checks for, then immediately kills, any untagged (non-test) Fillager --
-                several short rounds per outer health-poll cycle instead of one long one, so a straggler
-                that spawns and attacks between two samples has a MUCH narrower window to do so undetected
-                (see the fix comment above this function for the real CI failure that motivated shrinking
-                this window rather than just tolerating more hits). Density is refreshed by the caller once
-                per outer cycle, same cadence as before -- only the straggler sweep/check itself is tightened."""
-                seen = False
-                for _ in range(rounds):
-                    process.stdin.write(
-                        'execute if entity @e[type=dynamicpopulation:fillager,tag=!dpop_test_entity] '
-                        'run say DPOP_STRAGGLER_PRESENT\n'
+            process.stdin.write(
+                'execute as @e[tag=dpop_attacker_check_villager] at @s run dpop set zombie 1000\n'
+            )
+            captured = refresh_density(attacker_pos)
+            captured += drain_for(1.5)
+            health = query_health_unambiguous("dpop_attacker_check_zombie", "Zombie")
+            for attacker_tags in extract_combat_hits(captured, "dpop_attacker_check_zombie"):
+                if "dpop_attacker_check_villager" in attacker_tags:
+                    hits_after_mark += 1
+                    print(
+                        f"Attacker persistence check: a hit was logged with the PersistenceRequired "
+                        f"attacker's own tag as the attacker (hit #{hits_after_mark}) -- this is real, "
+                        "specific attribution, not a correlation.", flush=True,
                     )
-                    process.stdin.write('kill @e[type=dynamicpopulation:fillager,tag=!dpop_test_entity]\n')
-                    process.stdin.flush()
-                    if any("DPOP_STRAGGLER_PRESENT" in line for line in drain_for(interval)):
-                        seen = True
-                return seen
-
-            # Exactly one unexplained hit is tolerated, for one specific, structural, non-buggy reason:
-            # vanilla's own Goal/TargetGoal re-evaluation cadence is not every single tick, so a melee swing
-            # already "in flight" at the EXACT instant PersistenceRequired flips can still land once before
-            # canContinueToUse() next gets a chance to notice and stop the goal. This is a one-shot race
-            # tied to the moment of marking itself, not a recurring source -- a SECOND unexplained hit, or
-            # any unexplained hit after the first poll cycle, has no such explanation left and is treated as
-            # a real regression.
-            max_tolerated_unexplained_hits = 1
-            hits_after_marking = 0
-            unexplained_hits_after_marking = 0
-            attacker_stopped = True
-            running_baseline = last_zombie_health
-            for _ in range(8):
-                had_straggler = sweep_and_check_straggler(attacker_pos)
-                refresh_density(attacker_pos)
-                health = query_health_unambiguous("dpop_attacker_check_zombie", "Zombie")
-                if health is None:
-                    break
-                if health < running_baseline:
-                    hits_after_marking += 1
-                    running_baseline = health
-                    if had_straggler:
-                        print(
-                            "Attacker mid-goal persistence check: a hit landed, but an untagged straggler "
-                            "Fillager was observably present this same cycle -- attributed to the "
-                            "documented reconciliation-straggler race, not the marked attacker.", flush=True,
-                        )
-                    else:
-                        unexplained_hits_after_marking += 1
-                        print(
-                            "Attacker mid-goal persistence check: a hit landed with NO untagged straggler "
-                            f"present this cycle (unexplained hit #{unexplained_hits_after_marking}) -- the "
-                            "marked-persistent attacker is the only remaining candidate.", flush=True,
-                        )
-                        if unexplained_hits_after_marking > max_tolerated_unexplained_hits:
-                            attacker_stopped = False
-                            break
-            if attacker_stopped:
-                grace_note = (
-                    f" ({hits_after_marking} hit(s) observed total, all attributable to the documented "
-                    f"straggler race or the single in-flight-swing race at the moment of marking -- see "
-                    f"code comment)" if hits_after_marking else ""
-                )
-                print(
-                    "Attacker mid-goal persistence check: PASSED -- after the attacker was marked "
-                    f"persistent mid-chase (density kept >=500 throughout, so the persistence check is "
-                    f"the ONLY thing that could have stopped it), the target took no FURTHER damage "
-                    f"attributable to the marked attacker itself{grace_note}.", flush=True,
-                )
-            else:
-                raise RuntimeError(
-                    f"Attacker mid-goal persistence check FAILED: {unexplained_hits_after_marking} hit(s) "
-                    f"landed on the target with NO untagged straggler Fillager present that cycle, beyond "
-                    f"the {max_tolerated_unexplained_hits}-hit tolerance for the single in-flight-swing race "
-                    f"at the moment of marking. Density was kept >=500 for the entire window, so this is "
-                    f"not explained by the threshold gate -- attackerEligible()/isPersistenceRequired() "
-                    f"did not actually stop the marked-persistent attacker from continuing to deal damage."
-                )
+            if hits_after_mark > 0:
+                break
+            # Review fix (P2, round 6, finding #2): a missing/unreadable health sample must be a hard
+            # failure, never a silent pass -- the previous version of this check's loop simply `break`-ed
+            # out here, leaving its pass/fail flag at its default "stopped" value and printing PASSED
+            # despite never having actually confirmed anything for the rest of the window.
+            if health is None:
+                health_missing = True
+                break
+        if health_missing:
+            raise RuntimeError(
+                "Attacker persistence check FAILED: could not read the target's health during the wait "
+                "window (missing/unreadable data) -- a missing health sample must not be treated as a "
+                "pass. If the target is actually dead, that itself would mean the PersistenceRequired "
+                "attacker dealt damage, which is the exact regression this check exists to catch."
+            )
+        if hits_after_mark > 0:
+            raise RuntimeError(
+                f"Attacker persistence check FAILED: {hits_after_mark} hit(s) were logged with the "
+                f"PersistenceRequired attacker's own tag as the attacker -- attackerEligible()/"
+                f"isPersistenceRequired() did not actually stop it from initiating population-combat."
+            )
+        print(
+            "Attacker persistence check: PASSED -- a Fillager marked PersistenceRequired before ever "
+            "being given a target (density kept >=500 throughout, at both the fixed starting point and "
+            "the attacker's own current position, so the persistence check is the ONLY thing that could "
+            "have stopped it) never landed a single hit on an adjacent, always-eligible opposing-faction "
+            "target.", flush=True,
+        )
 
         process.stdin.write("stop\n")
         process.stdin.flush()

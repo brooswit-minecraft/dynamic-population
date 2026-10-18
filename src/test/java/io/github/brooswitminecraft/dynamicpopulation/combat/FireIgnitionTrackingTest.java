@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicpopulation.combat;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -121,13 +122,110 @@ class FireIgnitionTrackingTest {
     }
 
     @Test
-    void notSunEligibleOrOverrideInactiveIsNeverClearedAndLatchesAsProtected() {
+    void notSunEligibleOrOverrideInactiveIsNeverClearedButIsNotLatchedAsExternallyCaused() {
+        // Round-6 re-review fix: NOT sun-eligible, or override NOT active, correctly means the fire is not
+        // cleared THIS tick -- but, unlike the pre-fix behaviour, it must NOT latch the burn as
+        // "externally caused" going forward. There is no known non-sun cause here (knownNonSunIgnitionCause
+        // is false in both cases): the fire's true provenance is simply unresolved by these two facts alone,
+        // and overrideActive in particular must never be used as evidence of cause -- see the two new tests
+        // below for why conflating the two was the actual round-5 bug.
         var notSunEligible = FireIgnitionTracking.decide(160, 0, false, false, false, true);
         assertFalse(notSunEligible.clearFire());
-        assertTrue(notSunEligible.nextProtected());
+        assertFalse(notSunEligible.nextProtected(), "overrideActive being true but sunEligible false must "
+            + "not fabricate an externally-caused latch");
 
         var overrideInactive = FireIgnitionTracking.decide(160, 0, false, false, true, false);
         assertFalse(overrideInactive.clearFire());
-        assertTrue(overrideInactive.nextProtected());
+        assertFalse(overrideInactive.nextProtected(), "overrideActive being false must not itself be "
+            + "treated as evidence that the ignition was externally caused -- this was the round-5 P1 bug: "
+            + "a genuinely sun-caused burn that started before the override activated would otherwise be "
+            + "permanently misclassified as protected");
+    }
+
+    @Test
+    void sunCausedBurnStartingBeforeOverrideActivatesIsSuppressedAsSoonAsOverrideTurnsOnMidBurn() {
+        // Round-6 re-review P1: a genuine sun-caused ignition (no known external cause) starts while the
+        // override is NOT YET active -- so it is correctly left alone this tick, same as the test above.
+        var ignition = FireIgnitionTracking.decide(160, 0, false, false, true, false);
+        assertFalse(ignition.clearFire());
+        assertFalse(ignition.nextProtected());
+
+        // The burn continues decaying naturally (not a fresh ignition)...
+        var stillInactive = FireIgnitionTracking.decide(150, 160, ignition.nextProtected(), false, true, false);
+        assertFalse(stillInactive.freshIgnition());
+        assertFalse(stillInactive.clearFire());
+        assertFalse(stillInactive.nextProtected());
+
+        // ...and THEN the density override activates mid-burn (a density crossing, or the mob walking into
+        // an already->250 cell), with the SAME burn still ongoing (no fresh ignition jump). Because this
+        // burn's cause was never latched as external, suppression becomes eligible and must now apply, on
+        // this very next tick -- it does not need to wait for another fresh-ignition jump that may never
+        // come for a steadily decaying burn.
+        var afterCrossing = FireIgnitionTracking.decide(140, 150, stillInactive.nextProtected(), false, true, true);
+        assertFalse(afterCrossing.freshIgnition());
+        assertTrue(afterCrossing.clearFire(), "a genuinely sun-caused burn that started before the override "
+            + "activated must be suppressed as soon as the override becomes eligible mid-burn");
+    }
+
+    @Test
+    void externallyCausedBurnStartingWhileOverrideInactiveStaysProtectedAfterCrossingIntoOverrideActive() {
+        // The mirror-image case the ticket calls out explicitly: a mob is ignited by a KNOWN external cause
+        // (melee Fire Aspect / Flame arrow / fire-lava contact) while the override is NOT active. The
+        // override later activates (density crosses 250, or the mob walks into a >250 cell) WHILE the mob
+        // is still burning from that same original external ignition -- the override turning on must NOT
+        // retroactively relabel this burn as sun-caused; it must keep burning normally for its entire
+        // natural duration.
+        var ignition = FireIgnitionTracking.decide(160, 0, false, true, false, false);
+        assertFalse(ignition.clearFire());
+        assertTrue(ignition.nextProtected(), "a known external ignition must be latched regardless of "
+            + "whether the override happens to be active at that moment");
+
+        // Several ticks of natural decay, grace window for the direct cause evidence now expired
+        // (knownNonSunIgnitionCause is false), and the override has now crossed into active territory.
+        var afterCrossing = FireIgnitionTracking.decide(130, 150, ignition.nextProtected(), false, true, true);
+        assertFalse(afterCrossing.freshIgnition());
+        assertFalse(afterCrossing.clearFire(), "external cause persists regardless of override state -- "
+            + "the override activating mid-burn must not retroactively clear a burn whose cause was already "
+            + "decided, at ignition, to be external");
+        assertTrue(afterCrossing.nextProtected());
+    }
+
+    @Test
+    void snapshotAfterThisTickReflectsTheClearNotThePreClearValue() {
+        // Review fix P2, round 6: the pure half of the fix. The caller (SunImmunityTicking) must snapshot
+        // 0, not the pre-clear currentFireTicks, for any tick where clearFire() was honoured.
+        assertEquals(0, FireIgnitionTracking.snapshotFireTicksAfterThisTick(160, true));
+        assertEquals(160, FireIgnitionTracking.snapshotFireTicksAfterThisTick(160, false));
+    }
+
+    @Test
+    void immediateSameDurationReIgnitionOnTheVeryNextTickAfterAClearIsIndependentlyEvaluated() {
+        // Review fix P2, round 6: simulates the EXACT caller sequence the re-review flagged --
+        // SunImmunityTicking snapshotting LAST_FIRE_TICKS BEFORE calling clearFire() meant the stale
+        // pre-clear value was compared against on the next tick. This test drives decide() +
+        // snapshotFireTicksAfterThisTick() together, the same way the fixed caller now does, to prove a
+        // same-duration re-ignition on the very next tick is correctly seen as fresh and independently
+        // evaluated, never silently skipped because it happens to match a stale snapshot.
+
+        // Tick 1: fresh sun-caused ignition to 160 ticks -- no known cause, sun-eligible, override active:
+        // must be cleared.
+        var first = FireIgnitionTracking.decide(160, null, false, false, true, true);
+        assertTrue(first.clearFire());
+        int snapshotAfterTick1 = FireIgnitionTracking.snapshotFireTicksAfterThisTick(160, first.clearFire());
+        assertEquals(0, snapshotAfterTick1, "the snapshot carried into tick 2 must reflect the clear, not "
+            + "the pre-clear 160");
+
+        // Tick 2 (the VERY NEXT tick): re-ignited straight back to the SAME duration (160), but this time
+        // by a KNOWN EXTERNAL cause (e.g. a melee Fire Aspect hit) -- a completely independent ignition
+        // event from tick 1's. With the fix, previousFireTicks is 0 (the post-clear snapshot), so
+        // 160 > 0 correctly registers as fresh, and this ignition is re-evaluated from scratch on its own
+        // merits rather than being compared against -- or confused with -- tick 1's stale 160.
+        var second = FireIgnitionTracking.decide(160, snapshotAfterTick1, first.nextProtected(),
+            true, true, true);
+        assertTrue(second.freshIgnition(), "160 -> 160 across the clear boundary must still register as a "
+            + "fresh ignition, not be masked by a stale pre-clear snapshot");
+        assertFalse(second.clearFire(), "this second, independent, externally-caused ignition must be "
+            + "correctly left alone on its own merits");
+        assertTrue(second.nextProtected());
     }
 }
