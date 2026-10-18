@@ -24,6 +24,17 @@ bump: minor
   within the configured radius of each other, but Kings of different factions can coexist at/near the same
   location (see docs/villager-king.md for the rationale).
 
+### Fixed (review findings on this ticket's own PR)
+- Day/night spawn rate no longer floors to a literal zero all night/day at the default refill limit;
+  `SpawnRateBudget` now carries the fractional remainder across reconciliation intervals.
+- The >250 sun-burn override now ONLY suppresses genuine sunlight ignition (verified live on a real
+  dedicated server) instead of clearing all fire indiscriminately, and does so reliably rather than on a
+  rare, coincidental tick.
+- A filler that becomes persistent (named, leashed, etc.) is now actually excluded from population-combat
+  targeting -- a dead-code condition previously let it through regardless.
+- Fillager now has a real `ATTACK_DAMAGE` attribute so its population-combat `MeleeAttackGoal` isn't
+  functionally toothless.
+
 ### Not implemented (explicit follow-up)
 - Natural King spawning/founding remains unimplemented -- `/dpop king settle` is still the only way to found
   one, for every faction.

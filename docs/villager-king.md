@@ -218,6 +218,18 @@ population-combat goal — it does not suppress `FillagerTargetCompat`'s
 existing vanilla-attacker-vs-Fillager mirroring, or any mob's ordinary
 vanilla hostility (a filler Zombie still vanilla-attacks a player normally).
 
+**Review fix (P1-3):** the persistence check previously ALSO required the
+candidate's faction to be empty -- but every candidate reaching that check
+already has a non-empty faction (an earlier guard rejects empty-faction
+candidates first), so the persistence check was dead code: a tagged filler
+that later became persistent (named, leashed, picked up and re-placed, or
+any other vanilla persistence-granting action) was NEVER actually excluded.
+Fixed to check the entity's real, live `isPersistenceRequired()` state
+alone. Because `PopulationCombatTargetGoal#canContinueToUse` calls this
+exact check every evaluation cycle, a filler that transitions to persistent
+mid-chase loses its eligibility the very next check, not just at the next
+reconciliation pass.
+
 **The MINECRAFT-389 exception**: MINECRAFT-389 gave Fillager exactly one
 goal (`PanicGoal`, flee-on-hurt) and ZERO `targetSelector` goals, so a
 Fillager "never retaliates or acquires a combat target". MINECRAFT-390 adds
@@ -269,6 +281,22 @@ spawner, so this restriction is this mod's own, not a bypass of vanilla's)
 and have sun-exposure burning suppressed (`SunImmunityTicking`, an
 every-tick reactive extinguish, since a literal vanilla Zombie/Skeleton
 instance has no override point for `isSunBurnTick()` the way the Kings do).
+
+**Review fix (P1-2):** this check is scoped to SUNLIGHT ignition specifically,
+not "any fire". `SunImmunityTicking` reflectively invokes vanilla's own
+`Mob#isSunBurnTick()` on the real entity every tick (there is no NeoForge
+event around it, and no override point for a non-subclass instance) and
+only clears fire when THAT returns true — `isSunBurnTick()` has nothing to
+do with contact fire sources (lava, fire blocks, Flame-enchantment arrows),
+so ordinary ignition from any of those is left completely untouched
+regardless of density. `SunBurnSuppression.shouldSuppress` is the pure,
+unit-tested decision; see its own javadoc, and `SunImmunityTicking`'s, for
+the one honestly-flagged remaining edge case this cannot fully close
+without a Mixin/ASM transformer (a filler standing in lava/fire while ALSO
+meeting every deterministic sun-tick condition simultaneously) — a far
+narrower gap than the original version, which cleared ALL fire regardless
+of light/time/sky/weather.
+
 Does NOT grant general fire/lava immunity — only the sun-exposure burning
 check specifically; ordinary fire/lava damage from any other source is
 untouched. One faction's density grants only that faction's override
@@ -282,10 +310,28 @@ override active, combat not yet active), or at/above 500 (both active).
 Reconciliation's per-interval spawn RATE (never despawn, never density/target
 accounting, never Kings) is scaled by a per-faction time-of-day multiplier,
 read from world/game ticks only (`ServerLevel#getDayTime() % 24000`) —
-**never real wall-clock time**. `DayNightSpawnRate` is the pure logic;
+**never real wall-clock time**. `DayNightSpawnRate` is the pure logic.
+
+**Review fix (P1-1):** a naive `floor(configuredCap * multiplier)` PER
+INTERVAL silently floors every sub-1.0 result to a literal ZERO whenever
+`configuredCap` is small relative to `1/multiplier` — at the DEFAULT
+`fillager_refill_per_interval = 1`, `floor(1 * 0.25) == 0` and
+`floor(1 * 0.5) == 0`, so Fillagers would spawn at a flat zero rate all
+night, and Zombie/Skeleton fillers at a flat zero rate in both their
+non-peak phases, never the requested 25%/50%. `DayNightSpawnRate.accumulate`
+instead carries the undistributed fraction forward across intervals (e.g.
+four intervals at 0.25x with cap 1: 0, 0, 0, 1 — one real spawn every four
+intervals, not zero forever); `SpawnRateBudget` is the one place per
+(level, faction) that fraction is actually threaded across real
+reconciliation ticks. ONLY `fillager_refill_per_interval` is scaled this
+way — `fillager_spawn_cap_per_interval` stays UNSCALED, since it governs a
+different thing (a per-cell burst cap, not the overall rate) and was never
+the source of the zeroing bug.
+
 `FillagerPopulationSimulation.reconcile`/`FillerFactionSimulation.reconcile`
-are the two call sites, each scaling only `fillager_refill_per_interval` and
-`fillager_spawn_cap_per_interval` (never `fillager_despawn_cap_per_interval`)
+are the two call sites, each scaling ONLY `fillager_refill_per_interval`
+(via `SpawnRateBudget`'s fractional-carry accumulator) and NEVER
+`fillager_spawn_cap_per_interval` or `fillager_despawn_cap_per_interval`,
 before building the same `FillagerReconciliation.Params` as before.
 
 **Fillager: an independent 12h/12h day/night split** (NOT part of the

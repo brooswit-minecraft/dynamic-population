@@ -14,6 +14,7 @@ import io.github.brooswitminecraft.dynamicpopulation.propagation.CellKey;
 import io.github.brooswitminecraft.dynamicpopulation.propagation.DayNightSpawnRate;
 import io.github.brooswitminecraft.dynamicpopulation.propagation.LevelField;
 import io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationSimulation;
+import io.github.brooswitminecraft.dynamicpopulation.propagation.SpawnRateBudget;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityType;
@@ -78,15 +79,15 @@ public final class FillerFactionSimulation {
                 cells.add(field.cellAt(entity.blockPosition()));
             }
         }
-        // MINECRAFT-390 (settled spec): day/night spawn-RATE multiplier, scaling only the refill/spawn
-        // caps -- never despawnCapPerInterval, never density/target accounting -- and composed completely
-        // independently of the >250 light/sun EnvironmentalOverride (different inputs, never gating each
-        // other). See DayNightSpawnRate's class doc for the three-phase Zombie/Skeleton alignment.
+        // MINECRAFT-390 (settled spec; review fix P1-1): day/night spawn-RATE multiplier, scaling ONLY the
+        // refill limit via SpawnRateBudget's fractional-carry accumulator -- see
+        // FillagerPopulationSimulation.reconcile's own comment for why spawnCapPerInterval stays unscaled
+        // and why a naive per-interval floor was wrong. Composed completely independently of the >250
+        // light/sun EnvironmentalOverride (different inputs, never gating each other).
         long dayTime = level.getDayTime();
-        int scaledRefill = DayNightSpawnRate.scaleCap(config.reconciliationRefillPerInterval(), dayTime, spec.faction());
-        int scaledSpawnCap = DayNightSpawnRate.scaleCap(config.spawnCapPerInterval(), dayTime, spec.faction());
+        int scaledRefill = SpawnRateBudget.nextRefillAllowance(level, spec.faction(), config.reconciliationRefillPerInterval(), dayTime);
         var params = new FillagerReconciliation.Params(config.samplingHorizontalRadius(), config.samplingVerticalRadius(),
-            config.fillagersPerFullCell(), scaledRefill, scaledSpawnCap,
+            config.fillagersPerFullCell(), scaledRefill, config.spawnCapPerInterval(),
             config.despawnCapPerInterval());
         for (CellKey cell : cells) {
             if (field.blockedReason(cell) != null) {

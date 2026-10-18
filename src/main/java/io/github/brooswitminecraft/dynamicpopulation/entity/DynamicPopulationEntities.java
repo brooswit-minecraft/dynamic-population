@@ -42,9 +42,16 @@ public final class DynamicPopulationEntities {
     }
 
     private static void createAttributes(EntityAttributeCreationEvent event) {
+        // Review note: Fillager now carries a MeleeAttackGoal (MINECRAFT-390's population-combat exception
+        // -- see Fillager.registerGoals), so it needs a real ATTACK_DAMAGE attribute; Mob.createMobAttributes()
+        // alone defaults it to vanilla's near-zero base value, which would make the goal functionally
+        // toothless. 2.0 matches a bare-handed player's own base attack damage -- a Fillager has no
+        // weapon/equipment concept, so "unarmed human-equivalent" is the closest reasonable baseline; no
+        // specific number was mandated by the ticket.
         event.put(FILLAGER.get(), Mob.createMobAttributes()
             .add(Attributes.MAX_HEALTH, 20.0D)
             .add(Attributes.MOVEMENT_SPEED, 0.5D)
+            .add(Attributes.ATTACK_DAMAGE, 2.0D)
             .add(Attributes.FOLLOW_RANGE, 16.0D).build());
         // Kings: see each King entity class's own javadoc for the stat rationale. 1.5x-ish bigger/tougher
         // than the faction's ordinary filler/vanilla baseline across the board, deliberately not tied to

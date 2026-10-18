@@ -71,15 +71,33 @@ public final class PopulationCombatTargeting {
             || entity instanceof SkeletonKingEntity;
     }
 
-    /** The Minecraft-wiring half of {@link #isEligibleOpponent}: derives the plain facts from a real entity. */
+    /**
+     * The Minecraft-wiring half of {@link #isEligibleOpponent}: derives the plain facts from a real entity.
+     *
+     * <p><b>Review fix (P1-3):</b> {@code persistentOrPromoted} previously ALSO required
+     * {@code factionOf(candidate).isEmpty()} -- but every candidate that reaches the final
+     * {@link #isEligibleOpponent} call below is GUARANTEED to have a non-empty faction (the early return
+     * right above it rejects every empty-faction candidate first), so that extra clause made
+     * {@code persistentOrPromoted} dead code: it could never be {@code true} at the point it mattered. The
+     * practical consequence was that a TAGGED filler that later became persistent (named with a name tag,
+     * leashed, picked up and re-placed, or any other vanilla persistence-granting action) was NEVER actually
+     * excluded from being a population-combat target, contradicting the ticket's explicit "non-persistent
+     * members only" requirement. Fixed by checking the entity's REAL, LIVE persistence state alone -- no
+     * dependency on whether it also happens to carry a faction tag. Kings are still excluded earlier (via
+     * {@code isKing}), so this check does not need to special-case them again, but does so anyway (defensive,
+     * matches the documented defense-in-depth elsewhere in this class).
+     *
+     * <p>This also means {@link PopulationCombatTargetGoal#canContinueToUse}, which calls this exact method
+     * every evaluation cycle, now revalidates persistence LIVE, not just at the next reconciliation pass: a
+     * filler that transitions to persistent mid-chase has its target cleared the very next check.
+     */
     public static boolean isEligibleOpponent(Faction ownFaction, Entity candidate) {
         if (!(candidate instanceof LivingEntity living) || !living.isAlive()) {
             return false;
         }
         boolean isPlayer = candidate instanceof Player;
         boolean isKing = isKing(candidate);
-        boolean persistentOrPromoted = !isKing && candidate instanceof Mob mob && mob.isPersistenceRequired()
-            && factionOf(candidate).isEmpty();
+        boolean persistentOrPromoted = !isKing && candidate instanceof Mob mob && mob.isPersistenceRequired();
         Optional<Faction> candidateFaction = factionOf(candidate);
         if (candidateFaction.isEmpty()) {
             return false;

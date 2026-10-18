@@ -94,10 +94,30 @@ public final class DayNightSpawnRate {
     }
 
     /**
-     * Scales a configured per-interval spawn/refill cap by the current multiplier, floored, never negative.
-     * Never applied to a despawn cap -- this governs spawn RATE only, per the settled spec.
+     * One interval's accumulate-then-emit result: {@code spawnAllowance} is the whole-number cap to use
+     * THIS interval; {@code carry} is the leftover fraction to feed into the NEXT call.
+     *
+     * <p><b>Review fix (P1-1):</b> a naive {@code floor(configuredCap * multiplier)} per interval silently
+     * floors every sub-1.0 result to ZERO whenever {@code configuredCap} is small relative to
+     * {@code 1/multiplier} -- at the DEFAULT {@code fillager_refill_per_interval = 1}, {@code floor(1 *
+     * 0.25) == 0} and {@code floor(1 * 0.5) == 0}, so Fillagers would spawn at a literal zero rate all
+     * night, and Zombie/Skeleton fillers at zero rate in both their non-peak phases -- not the requested
+     * 25%/50%. This record instead carries the undistributed fraction across intervals (see
+     * {@link #accumulate}), so the LONG-RUN rate over many intervals converges to the configured multiplier
+     * even when any single interval's emitted whole number is 0.
      */
-    public static int scaleCap(int configuredCap, long dayTimeTicks, Faction faction) {
-        return Math.max(0, (int) Math.floor(configuredCap * multiplier(dayTimeTicks, faction)));
+    public record Accumulation(int spawnAllowance, double carry) { }
+
+    /**
+     * Pure accumulator step: adds this interval's fractional budget ({@code configuredCap * multiplier}) to
+     * the carried-over fraction from the previous call, emits the whole part as this interval's spawn
+     * allowance, and keeps the remaining fraction for the next call. Over N intervals the sum of every
+     * emitted {@code spawnAllowance} converges to within 1 of {@code N * configuredCap * multiplier} --
+     * never systematically zero merely because one interval's product happens to round down.
+     */
+    public static Accumulation accumulate(double carryIn, int configuredCap, double multiplier) {
+        double total = carryIn + configuredCap * multiplier;
+        int whole = (int) Math.floor(total);
+        return new Accumulation(whole, total - whole);
     }
 }

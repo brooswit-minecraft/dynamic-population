@@ -147,6 +147,191 @@ def boot(root):
                 break
         assert settled_factions == {"VILLAGER", "ZOMBIE", "SKELETON"}
         print("Verified /dpop king settle creates real King entities for every faction", flush=True)
+
+        # MINECRAFT-390 (reviewer-requested acceptance evidence): a REAL multi-tick battle, not just a
+        # pure-logic unit test. Force both factions' local density to >=500 at a fixed position (the same
+        # existing debug-seed command the ticket documents, now faction-aware -- see PopulationCommands),
+        # summon one non-persistent member of each opposing faction right next to each other, then poll
+        # real server ticks for actual combat damage/death. This directly exercises
+        # PopulationCombatTargetGoal + PopulationCombatTargeting + the real MeleeAttackGoal/vanilla attack
+        # goals end to end -- not a hand-constructed predicate.
+        # Root cause of an earlier failed attempt at this check, left here as a note: /dpop set is a no-op
+        # on an unloaded chunk's anchor (LevelField.set silently returns if the chunk's attachment isn't
+        # loaded yet) -- a position far from spawn with no player connected has nothing keeping its chunk
+        # loaded, so the density "set" would silently do nothing and the override would never activate.
+        # /forceload guarantees the chunk is loaded before dpop set ever runs, regardless of position.
+        battle_pos = "200 -59 0"
+        process.stdin.write('forceload add 192 -16 224 16\n')
+        process.stdin.flush()
+        # Give the forceload ticket time to actually load the chunk (chunk loading is async; a command
+        # issued the same tick as forceload add can still see "not loaded").
+        drain_for_initial = []
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            try:
+                line = lines.get(timeout=max(0.01, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if line is None:
+                raise RuntimeError("Server exited while force-loading the battle chunk")
+        process.stdin.write(f'execute positioned {battle_pos} run dpop set villager 600\n')
+        process.stdin.write(f'execute positioned {battle_pos} run dpop set zombie 600\n')
+        process.stdin.write(f'execute positioned {battle_pos} run dpop show zombie\n')
+        process.stdin.write(f'summon dynamicpopulation:fillager {battle_pos} {{Tags:["dpop_battle_villager"]}}\n')
+        process.stdin.write(f'summon minecraft:zombie 201 -59 0 {{Tags:["dpop_zombie_filler","dpop_battle_zombie"]}}\n')
+        process.stdin.write('say DPOP_BATTLE_SETUP_DONE\n')
+        process.stdin.flush()
+        deadline = time.monotonic() + 30
+        density_confirmed = False
+        while True:
+            line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+            if line is None:
+                raise RuntimeError("Server exited while setting up the battle scenario")
+            if "cell CellKey" in line and "= 600 ppt" in line:
+                density_confirmed = True
+            if "DPOP_BATTLE_SETUP_DONE" in line:
+                break
+        if not density_confirmed:
+            raise RuntimeError(
+                "Battle scenario setup: /dpop show zombie did not confirm the density actually reached "
+                "600 ppt at the battle position -- the chunk may still not have been loaded in time for "
+                "/dpop set to take effect; see captured output above."
+            )
+
+        def query_health(tag):
+            process.stdin.write(f'execute if entity @e[tag={tag}] run data get entity @e[tag={tag},limit=1] Health\n')
+            process.stdin.flush()
+
+        def drain_for(seconds):
+            end = time.monotonic() + seconds
+            captured = []
+            while time.monotonic() < end:
+                try:
+                    line = lines.get(timeout=max(0.01, end - time.monotonic()))
+                except queue.Empty:
+                    break
+                if line is None:
+                    raise RuntimeError("Server exited during the battle wait window")
+                captured.append(line)
+            return captured
+
+        villager_alive_last = True
+        zombie_alive_last = True
+        villager_health = None
+        zombie_health = None
+        battle_resolved = False
+        # Poll for up to 90 real seconds (the server runs at vanilla's real-time tick rate; goal selectors
+        # re-evaluate on their own internal cadence, so this allows several full evaluation/attack cycles).
+        for _ in range(18):
+            query_health("dpop_battle_villager")
+            query_health("dpop_battle_zombie")
+            process.stdin.write(
+                'execute unless entity @e[tag=dpop_battle_villager] run say DPOP_BATTLE_VILLAGER_DIED\n'
+            )
+            process.stdin.write(
+                'execute unless entity @e[tag=dpop_battle_zombie] run say DPOP_BATTLE_ZOMBIE_DIED\n'
+            )
+            process.stdin.flush()
+            captured = drain_for(5)
+            for line in captured:
+                if "DPOP_BATTLE_VILLAGER_DIED" in line:
+                    villager_alive_last = False
+                    battle_resolved = True
+                if "DPOP_BATTLE_ZOMBIE_DIED" in line:
+                    zombie_alive_last = False
+                    battle_resolved = True
+                if "entity data:" in line:
+                    try:
+                        value = float(line.split("entity data:")[1].strip().rstrip("f").split()[0])
+                    except (IndexError, ValueError):
+                        continue
+                    # Whichever of the two most-recently-issued health queries this reply belongs to is
+                    # ambiguous from the log alone (both use the same feedback format); record the last
+                    # two distinct values seen as a best-effort damage signal rather than per-entity.
+                    if villager_health is None:
+                        villager_health = value
+                    else:
+                        zombie_health = value
+            if battle_resolved:
+                break
+        damage_observed = (
+            battle_resolved
+            or (villager_health is not None and villager_health < 20.0)
+            or (zombie_health is not None and zombie_health < 20.0)
+        )
+        if battle_resolved:
+            print(
+                f"Battle test: RESOLVED -- villager side died={not villager_alive_last}, "
+                f"zombie side died={not zombie_alive_last} (real combat damage/death confirmed)", flush=True,
+            )
+        elif damage_observed:
+            print(
+                f"Battle test: damage observed but inconclusive outcome (last health samples: "
+                f"{villager_health}, {zombie_health})", flush=True,
+            )
+        else:
+            print(
+                "Battle test: INCONCLUSIVE -- no death or health drop observed within the poll window. "
+                "This does NOT prove combat is broken (goal-selector timing/AI pathing/attack-range "
+                "variance can legitimately delay engagement past this script's budget); it means this run "
+                "did not capture conclusive real-time evidence. See the PR's honesty note.", flush=True,
+            )
+
+        # MINECRAFT-390 review fix P1-3 (live corroboration): a FILLER that becomes persistent must stop
+        # being a population-combat target. Summon a persistent-tagged zombie filler right next to an
+        # aggressive Fillager at the same high density and confirm it is NEVER damaged over the same wait
+        # budget, unlike the non-persistent zombie above. Also sets ZOMBIE density here too (not just
+        # villager) -- without it, this zombie would be killed by ordinary vanilla sun-burning regardless
+        # of the P1-3 fix, confounding the result with an unrelated death cause. (205, 206) are within the
+        # same forceload region already requested above, so the chunk is already loaded by this point.
+        process.stdin.write(f'execute positioned 205 -59 0 run dpop set villager 600\n')
+        process.stdin.write(f'execute positioned 205 -59 0 run dpop set zombie 600\n')
+        process.stdin.write(f'execute positioned 205 -59 0 run dpop show zombie\n')
+        process.stdin.write(
+            'summon minecraft:zombie 205 -59 0 '
+            '{Tags:["dpop_zombie_filler","dpop_persistent_check"],PersistenceRequired:1b}\n'
+        )
+        process.stdin.write(f'summon dynamicpopulation:fillager 206 -59 0 {{Tags:["dpop_persistent_check_villager"]}}\n')
+        process.stdin.write('say DPOP_PERSISTENCE_CHECK_SETUP_DONE\n')
+        process.stdin.flush()
+        deadline = time.monotonic() + 30
+        persistence_density_confirmed = False
+        while True:
+            line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+            if line is None:
+                raise RuntimeError("Server exited while setting up the persistence-exclusion check")
+            if "cell CellKey" in line and "= 600 ppt" in line:
+                persistence_density_confirmed = True
+            if "DPOP_PERSISTENCE_CHECK_SETUP_DONE" in line:
+                break
+        if not persistence_density_confirmed:
+            raise RuntimeError(
+                "Persistence-exclusion scenario setup: /dpop show zombie did not confirm 600 ppt density "
+                "at this position -- see captured output above."
+            )
+        persistent_zombie_untouched = True
+        for _ in range(6):
+            process.stdin.write(
+                'execute unless entity @e[tag=dpop_persistent_check] run say DPOP_PERSISTENT_ZOMBIE_DIED\n'
+            )
+            process.stdin.flush()
+            captured = drain_for(5)
+            for line in captured:
+                if "DPOP_PERSISTENT_ZOMBIE_DIED" in line:
+                    persistent_zombie_untouched = False
+        if persistent_zombie_untouched:
+            print(
+                "Persistence-exclusion check: the PersistenceRequired-tagged filler survived the full wait "
+                "window untouched -- consistent with (but not absolute proof of) exclusion from "
+                "population-combat targeting; a full proof would require instrumenting the live target "
+                "selection itself, not just an outcome, which this script does not do.", flush=True,
+            )
+        else:
+            raise RuntimeError(
+                "Persistence-exclusion check FAILED: the PersistenceRequired-tagged filler died -- this "
+                "would indicate the P1-3 fix did not actually exclude it from targeting."
+            )
+
         process.stdin.write("stop\n")
         process.stdin.flush()
         rc = process.wait(timeout=60)

@@ -4,6 +4,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -11,17 +12,36 @@ import net.minecraft.server.level.ServerLevel;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
-/** Debug commands (op level 2): look at the field, put population in, step it, clear it. */
+/**
+ * Debug commands (op level 2): look at the field, put population in, step it, clear it.
+ *
+ * <p>MINECRAFT-390: {@code set}/{@code show} gained an optional leading faction literal
+ * ({@code villager|zombie|skeleton}) so a test/operator can directly seed any ONE faction's field at a
+ * position -- bare {@code /dpop set <ppt>} is unchanged (still Villager), matching the same
+ * backward-compatible pattern {@code KingCommands}' own {@code settle [faction]} already uses. This is the
+ * same existing debug-seeding mechanism the ticket itself documents as the sole direct-seed test path
+ * (`docs/propagation.md`), now faction-aware -- not a new spawning mechanism.
+ */
 public final class PopulationCommands {
     private PopulationCommands() { }
 
     @SubscribeEvent
     public static void register(RegisterCommandsEvent event) {
         event.getDispatcher().register(Commands.literal("dpop").requires(s -> s.hasPermission(2))
-            .then(Commands.literal("show").executes(PopulationCommands::show))
+            .then(Commands.literal("show").executes(c -> show(c, Faction.VILLAGER))
+                .then(Commands.literal("villager").executes(c -> show(c, Faction.VILLAGER)))
+                .then(Commands.literal("zombie").executes(c -> show(c, Faction.ZOMBIE)))
+                .then(Commands.literal("skeleton").executes(c -> show(c, Faction.SKELETON))))
             .then(Commands.literal("field").executes(PopulationCommands::summary))
-            .then(Commands.literal("set").then(Commands.argument("ppt", IntegerArgumentType.integer(0, Propagation.CAPACITY))
-                .executes(PopulationCommands::set)))
+            .then(Commands.literal("set")
+                .then(Commands.argument("ppt", IntegerArgumentType.integer(0, Propagation.CAPACITY))
+                    .executes(c -> set(c, Faction.VILLAGER, IntegerArgumentType.getInteger(c, "ppt"))))
+                .then(Commands.literal("villager").then(Commands.argument("ppt", IntegerArgumentType.integer(0, Propagation.CAPACITY))
+                    .executes(c -> set(c, Faction.VILLAGER, IntegerArgumentType.getInteger(c, "ppt")))))
+                .then(Commands.literal("zombie").then(Commands.argument("ppt", IntegerArgumentType.integer(0, Propagation.CAPACITY))
+                    .executes(c -> set(c, Faction.ZOMBIE, IntegerArgumentType.getInteger(c, "ppt")))))
+                .then(Commands.literal("skeleton").then(Commands.argument("ppt", IntegerArgumentType.integer(0, Propagation.CAPACITY))
+                    .executes(c -> set(c, Faction.SKELETON, IntegerArgumentType.getInteger(c, "ppt"))))))
             .then(Commands.literal("step").executes(c -> step(c, 1))
                 .then(Commands.argument("count", IntegerArgumentType.integer(1, 10000)).executes(c -> step(c, IntegerArgumentType.getInteger(c, "count")))))
             .then(Commands.literal("clear").executes(PopulationCommands::clear)));
@@ -31,11 +51,11 @@ public final class PopulationCommands {
         return c.getSource().getLevel();
     }
 
-    private static int show(CommandContext<CommandSourceStack> c) throws CommandSyntaxException {
+    private static int show(CommandContext<CommandSourceStack> c, Faction faction) throws CommandSyntaxException {
         ServerLevel level = level(c);
-        LevelField field = PopulationSimulation.field(level);
+        LevelField field = PopulationSimulation.field(level, faction);
         CellKey here = field.cellAt(net.minecraft.core.BlockPos.containing(c.getSource().getPosition()));
-        StringBuilder out = new StringBuilder("cell " + here + " = " + field.get(here) + " ppt"
+        StringBuilder out = new StringBuilder("[" + faction + "] cell " + here + " = " + field.get(here) + " ppt"
             + (PopulationSimulation.simulated(level) ? "" : " (not simulated: Overworld only)"));
         String[] names = {"down", "up", "east", "west", "south", "north"};
         int[][] ds = {{0, -1, 0}, {0, 1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}};
@@ -48,18 +68,17 @@ public final class PopulationCommands {
         return field.get(here);
     }
 
-    private static int set(CommandContext<CommandSourceStack> c) {
+    private static int set(CommandContext<CommandSourceStack> c, Faction faction, int value) {
         ServerLevel level = level(c);
-        LevelField field = PopulationSimulation.field(level);
+        LevelField field = PopulationSimulation.field(level, faction);
         CellKey here = field.cellAt(net.minecraft.core.BlockPos.containing(c.getSource().getPosition()));
-        int value = IntegerArgumentType.getInteger(c, "ppt");
         field.set(here, value);
         if (value > 0) {
-            PopulationSimulation.active(level).add(here);
+            PopulationSimulation.active(level, faction).add(here);
         } else {
-            PopulationSimulation.active(level).remove(here);
+            PopulationSimulation.active(level, faction).remove(here);
         }
-        c.getSource().sendSuccess(() -> Component.literal("set " + here + " to " + value + " ppt"), true);
+        c.getSource().sendSuccess(() -> Component.literal("[" + faction + "] set " + here + " to " + value + " ppt"), true);
         return value;
     }
 

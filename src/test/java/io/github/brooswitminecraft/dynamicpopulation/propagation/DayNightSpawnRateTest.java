@@ -104,23 +104,90 @@ class DayNightSpawnRateTest {
         assertEquals(DayNightSpawnRate.skeletonMultiplier(8000), DayNightSpawnRate.multiplier(8000, Faction.SKELETON));
     }
 
-    // --- scaleCap: the actual call-site transformation.
+    // --- accumulate: the fractional-carry fix for review finding P1-1 (a naive per-interval floor
+    // silently floors a sub-1.0 rate to a literal ZERO spawn rate at the default refill limit of 1).
 
     @Test
-    void scaleCapNeverGoesNegativeOrBelowZero() {
-        assertEquals(0, DayNightSpawnRate.scaleCap(0, 8000, Faction.ZOMBIE));
-        assertTrue(DayNightSpawnRate.scaleCap(1, 8000, Faction.ZOMBIE) >= 0);
+    void accumulateNeverGoesNegative() {
+        assertEquals(0, DayNightSpawnRate.accumulate(0.0, 0, 0.25).spawnAllowance());
     }
 
     @Test
-    void scaleCapAtFullRateIsUnchanged() {
-        assertEquals(4, DayNightSpawnRate.scaleCap(4, 16000, Faction.ZOMBIE)); // Zombie's own peak, 1.0x
+    void accumulateAtFullRateEmitsTheWholeCapEveryInterval() {
+        var result = DayNightSpawnRate.accumulate(0.0, 4, 1.0);
+        assertEquals(4, result.spawnAllowance());
+        assertEquals(0.0, result.carry(), 1e-9);
     }
 
     @Test
-    void scaleCapAtQuarterRateFloors() {
-        assertEquals(0, DayNightSpawnRate.scaleCap(1, 8000, Faction.ZOMBIE)); // 1 * 0.25 = 0.25 -> floor 0
-        assertEquals(1, DayNightSpawnRate.scaleCap(5, 8000, Faction.ZOMBIE)); // 5 * 0.25 = 1.25 -> floor 1
+    void defaultRefillLimitAtQuarterRateSpawnsExactlyOnceEveryFourIntervals() {
+        // THE regression test for P1-1: configuredCap=1 (the real default fillager_refill_per_interval),
+        // multiplier=0.25 (a non-peak Fillager-night / Zombie-day / Skeleton-day phase). A naive
+        // floor(1*0.25) would emit 0 EVERY interval forever -- the actual bug. The accumulator must instead
+        // emit exactly 1 spawn allowance somewhere across every 4 intervals, carrying the rest forward.
+        double carry = 0.0;
+        int totalSpawned = 0;
+        int[] perInterval = new int[4];
+        for (int i = 0; i < 4; i++) {
+            var result = DayNightSpawnRate.accumulate(carry, 1, 0.25);
+            perInterval[i] = result.spawnAllowance();
+            carry = result.carry();
+            totalSpawned += result.spawnAllowance();
+        }
+        assertEquals(1, totalSpawned, "must spawn at least once across 4 intervals at a 0.25x rate -- never a flat zero");
+        assertEquals(0.0, carry, 1e-9, "carry must return to exactly 0 after a full 4-interval cycle at 0.25x");
+        // Deterministic (no randomness involved): the spawn must land on the LAST interval, not earlier --
+        // confirms the carry genuinely accumulates rather than spawning early by coincidence.
+        assertEquals(0, perInterval[0]);
+        assertEquals(0, perInterval[1]);
+        assertEquals(0, perInterval[2]);
+        assertEquals(1, perInterval[3]);
+    }
+
+    @Test
+    void defaultRefillLimitAtHalfRateSpawnsOnceEveryTwoIntervals() {
+        // Zombie/Skeleton's own "opposite peak" phase (0.5x) at the default refill limit of 1.
+        double carry = 0.0;
+        int totalOverEightIntervals = 0;
+        for (int i = 0; i < 8; i++) {
+            var result = DayNightSpawnRate.accumulate(carry, 1, 0.5);
+            carry = result.carry();
+            totalOverEightIntervals += result.spawnAllowance();
+        }
+        assertEquals(4, totalOverEightIntervals, "8 intervals at 0.5x with cap 1 must total exactly 4, not 0");
+    }
+
+    @Test
+    void lowConfiguredLimitAtQuarterRateConvergesToTheLongRunRate() {
+        // A "low configured limit" other than the bare default: cap=3, multiplier=0.25 -> 0.75/interval.
+        // Over a 4-interval cycle (0.75*4 = 3.0 exactly) the fractional remainder returns to 0 and the
+        // total spawned must be exactly 3 -- not floor(3*0.25)=0 repeated forever.
+        double carry = 0.0;
+        int total = 0;
+        for (int i = 0; i < 4; i++) {
+            var result = DayNightSpawnRate.accumulate(carry, 3, 0.25);
+            carry = result.carry();
+            total += result.spawnAllowance();
+        }
+        assertEquals(3, total);
+        assertEquals(0.0, carry, 1e-9);
+    }
+
+    @Test
+    void longRunRateApproximatesTheConfiguredMultiplierOverManyIntervals() {
+        // A longer run (100 intervals) at the default refill limit (1) and the 0.25x multiplier: the
+        // long-run AVERAGE spawn allowance per interval must be close to 0.25, not 0.
+        double carry = 0.0;
+        int total = 0;
+        int intervals = 100;
+        for (int i = 0; i < intervals; i++) {
+            var result = DayNightSpawnRate.accumulate(carry, 1, 0.25);
+            carry = result.carry();
+            total += result.spawnAllowance();
+        }
+        double observedRate = total / (double) intervals;
+        assertEquals(0.25, observedRate, 0.02, "observed long-run rate must approximate the 0.25x multiplier");
+        assertTrue(total > 0, "100 intervals at a 0.25x rate must spawn SOMETHING, not a flat zero");
     }
 
     // --- No interaction with the independent >250 override, or with each other's inputs.
