@@ -11,6 +11,7 @@ from release_publish import (
     existing_release_is_identical,
     jar_declares_version,
     publish_or_verify_identical,
+    ref_confirmed_absent,
     validate_dispatch_pair,
     validate_notes,
     validate_version,
@@ -121,6 +122,26 @@ class ExistingReleaseIsIdenticalTest(unittest.TestCase):
 
     def test_all_different_is_not_identical(self):
         self.assertFalse(existing_release_is_identical("x", "y", "z", "sha-a", "sha-b"))
+
+
+class RefConfirmedAbsentTest(unittest.TestCase):
+    def test_404_is_confirmed_absent(self):
+        self.assertTrue(ref_confirmed_absent("gh: Not Found (HTTP 404)"))
+
+    def test_422_no_commit_found_is_confirmed_absent(self):
+        # Confirmed live: the commits API answers an unresolvable tag ref
+        # with 422, not 404 -- "gh: No commit found for SHA: v0.2.0-alpha.1
+        # (HTTP 422)" against a real nonexistent tag.
+        self.assertTrue(ref_confirmed_absent("gh: No commit found for SHA: v0.2.0-alpha.1 (HTTP 422)"))
+
+    def test_other_422_is_not_confirmed_absent(self):
+        self.assertFalse(ref_confirmed_absent("gh: Validation Failed (HTTP 422)"))
+
+    def test_auth_error_is_not_confirmed_absent(self):
+        self.assertFalse(ref_confirmed_absent("gh: Bad credentials (HTTP 401)"))
+
+    def test_rate_limit_is_not_confirmed_absent(self):
+        self.assertFalse(ref_confirmed_absent("gh: API rate limit exceeded (HTTP 403)"))
 
 
 class PublishOrVerifyIdenticalTest(unittest.TestCase):
