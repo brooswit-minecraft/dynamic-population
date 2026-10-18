@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicpopulation.reconciliation;
 
+import java.util.function.BiConsumer;
 import java.util.function.ToIntFunction;
 
 import io.github.brooswitminecraft.dynamicpopulation.propagation.CellKey;
@@ -62,5 +63,20 @@ public final class FillagerReconciliation {
     /** The death feedback is deliberately a local scalar operation, never a sampled-window operation. */
     public static int unsafeDeathTargetAfter(int localTarget, int decrement) {
         return Math.max(0, localTarget - decrement);
+    }
+
+    /**
+     * The full event-to-storage wiring for AC9, as a pure function: given whether a death was classified
+     * unsafe, read-then-write exactly the one local cell, never a neighbour. {@code unsafe == false} (an
+     * ordinary despawn, promotion, or any non-hazard death) must leave storage completely untouched -- no
+     * read, no write -- not just an unchanged value, since this is also what the event handler calls for
+     * every Fillager death, unsafe or not.
+     */
+    public static void applyUnsafeDeathIfUnsafe(boolean unsafe, CellKey localCell, ToIntFunction<CellKey> read,
+            BiConsumer<CellKey, Integer> write, int decrement) {
+        if (!unsafe) {
+            return;
+        }
+        write.accept(localCell, unsafeDeathTargetAfter(read.applyAsInt(localCell), decrement));
     }
 }

@@ -124,4 +124,36 @@ class FillagerReconciliationTest {
         assertEquals(75, storage.get(ORIGIN));
         assertEquals(700, storage.get(neighbour), "unsafe death must not decrement the sampled neighbourhood");
     }
+
+    @Test
+    void unsafeDeathEventWiringDecrementsExactlyTheOneLocalCell() {
+        // Exercises FillagerPopulationSimulation.onLivingDeath's actual wiring (applyUnsafeDeathIfUnsafe),
+        // not just the arithmetic helper it eventually calls -- this is what the review flagged as missing.
+        Map<CellKey, Integer> storage = new HashMap<>();
+        CellKey neighbour = ORIGIN.offset(1, 0, 0);
+        storage.put(ORIGIN, 100);
+        storage.put(neighbour, 700);
+
+        FillagerReconciliation.applyUnsafeDeathIfUnsafe(true, ORIGIN, storage::get, storage::put, 25);
+
+        assertEquals(75, storage.get(ORIGIN), "the local cell must be decremented by exactly the configured amount");
+        assertEquals(700, storage.get(neighbour), "a neighbouring cell must never be touched by a local unsafe death");
+    }
+
+    @Test
+    void ordinaryRemovalOrPromotionNeverTouchesAnyTargetThroughTheDeathWiring() {
+        // Ordinary despawn-over-target and promotion never fire LivingDeathEvent at all (they use discard()),
+        // but if a death ever reaches this wiring unclassified as unsafe, storage must stay untouched -- no
+        // read, no write -- exactly as "removing a Fillager by any other means never decrements any target".
+        Map<CellKey, Integer> storage = new HashMap<>();
+        storage.put(ORIGIN, 100);
+        Map<CellKey, Integer> before = Map.copyOf(storage);
+
+        FillagerReconciliation.applyUnsafeDeathIfUnsafe(false, ORIGIN,
+            cell -> { throw new AssertionError("an unclassified death must never even read the local cell"); },
+            (cell, value) -> { throw new AssertionError("an unclassified death must never write the local cell"); },
+            25);
+
+        assertEquals(before, storage);
+    }
 }

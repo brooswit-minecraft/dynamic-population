@@ -110,14 +110,14 @@ public final class FillagerPopulationSimulation {
 
     @SubscribeEvent
     public static void onLivingDeath(LivingDeathEvent event) {
-        if (!(event.getEntity() instanceof Fillager fillager) || !isUnsafeDeath(fillager, event.getSource())
-                || !(fillager.level() instanceof ServerLevel level)) {
+        if (!(event.getEntity() instanceof Fillager fillager) || !(fillager.level() instanceof ServerLevel level)) {
             return;
         }
         LevelField field = PopulationSimulation.field(level);
         CellKey localCell = field.cellAt(fillager.blockPosition());
+        boolean unsafe = isUnsafeDeath(fillager, event.getSource());
         int decrement = DynamicPopulationConfig.get().unsafeDeathTargetDecrement();
-        field.set(localCell, FillagerReconciliation.unsafeDeathTargetAfter(field.get(localCell), decrement));
+        FillagerReconciliation.applyUnsafeDeathIfUnsafe(unsafe, localCell, field::get, field::set, decrement);
     }
 
     /**
@@ -125,10 +125,12 @@ public final class FillagerPopulationSimulation {
      * lava/fire/soul-fire at the feet (its own self-triggered kill); every other hazard this mod already
      * treats as unsafe for spawning (see {@code hazard()}/{@code safeSpawn} above: cactus, campfire, soul
      * campfire, sweet berry bush, wither rose) kills a Fillager through vanilla's own damage path instead,
-     * never setting that flag. Classify those too, by the death's real {@code DamageType} registry key
-     * (stable; {@code msgId} is not -- {@code DamageTypes.CAMPFIRE} and {@code DamageTypes.IN_FIRE} share
-     * the msgId "inFire"), plus drowning and in-wall suffocation, which have no feet-block equivalent at
-     * all. {@link #isUnsafeDeathTypePath} is the pure, unit-tested half of this; it never receives storage.
+     * never setting that flag -- wither rose specifically kills via delayed wither-effect damage, not a
+     * feet-block check at all, so it could never set that flag even in principle. Classify those too, by
+     * the death's real {@code DamageType} registry key (stable; {@code msgId} is not -- {@code
+     * DamageTypes.CAMPFIRE} and {@code DamageTypes.IN_FIRE} share the msgId "inFire"), plus drowning and
+     * in-wall suffocation, which have no feet-block equivalent at all. {@link #isUnsafeDeathTypePath} is
+     * the pure, unit-tested half of this; it never receives storage.
      */
     private static boolean isUnsafeDeath(Fillager fillager, net.minecraft.world.damagesource.DamageSource source) {
         if (fillager.wasUnsafeLocationDeath()) {
@@ -145,5 +147,6 @@ public final class FillagerPopulationSimulation {
     }
 
     private static final Set<String> UNSAFE_DEATH_TYPE_PATHS = Set.of(
-        "lava", "in_fire", "on_fire", "hot_floor", "campfire", "cactus", "sweet_berry_bush", "drown", "in_wall");
+        "lava", "in_fire", "on_fire", "hot_floor", "campfire", "cactus", "sweet_berry_bush", "drown", "in_wall",
+        "wither");
 }

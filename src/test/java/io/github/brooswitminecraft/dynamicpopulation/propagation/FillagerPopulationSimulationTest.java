@@ -9,7 +9,7 @@ class FillagerPopulationSimulationTest {
     @Test
     void recognizesEveryEnvironmentalHazardAsUnsafe() {
         for (String path : new String[] {"lava", "in_fire", "on_fire", "hot_floor", "campfire", "cactus",
-                "sweet_berry_bush", "drown", "in_wall"}) {
+                "sweet_berry_bush", "drown", "in_wall", "wither"}) {
             assertTrue(FillagerPopulationSimulation.isUnsafeDeathTypePath(path), path + " must be unsafe");
         }
     }
