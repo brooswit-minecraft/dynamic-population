@@ -490,6 +490,19 @@ def boot(root):
 
             # Review fix (P2, re-review): the PREVIOUS version of this check zeroed villager density the
             # moment the attacker was marked persistent, to starve reconciliation of its reason to keep
+            # spawning stragglers during the post-mark window -- see the longer explanation below for why
+            # that made the check self-defeating. This comment documents a SECOND iteration on the fix,
+            # driven by a real CI failure on the first iteration (not a local assumption): sweeping/checking
+            # for stragglers only once per ~1.3s outer health-poll cycle left a window wide enough for
+            # reconciliation to spawn AND land a hit with an untagged straggler entirely BETWEEN two
+            # consecutive checks -- confirmed directly in that CI run's own server log, which showed
+            # "No entity was found" (0 stragglers) at one straggler-presence check, immediately followed
+            # under a second later by "Killed 4 entities"/"Killed 3 entities" at the NEXT cycle's sweep --
+            # i.e. a burst of stragglers spawned, attacked, and were swept entirely inside one single outer
+            # cycle, invisible to a check that only samples once per cycle. The fix below shrinks that
+            # window by two orders of magnitude (checking/sweeping every ~0.2s instead of ~1.3s) rather than
+            # just re-tuning a tolerance number.
+            # moment the attacker was marked persistent, to starve reconciliation of its reason to keep
             # spawning stragglers during the post-mark window. That made the check SELF-DEFEATING: with
             # density zeroed, PopulationCombatTargetGoal#canContinueToUse would ALSO return false via its
             # OWN, pre-existing `PopulationCombatEligibility.active(localDensity)` check -- the exact same
@@ -512,13 +525,24 @@ def boot(root):
             # (the straggler, not the marked-persistent attacker); a hit with NO straggler present has no
             # explanation left except the marked attacker itself, which attackerEligible() should have
             # excluded -- a genuine regression, not a race.
-            def straggler_present(pos):
-                process.stdin.write(
-                    'execute if entity @e[type=dynamicpopulation:fillager,tag=!dpop_test_entity] '
-                    'run say DPOP_STRAGGLER_PRESENT\n'
-                )
-                process.stdin.flush()
-                return any("DPOP_STRAGGLER_PRESENT" in line for line in drain_for(0.2))
+            def sweep_and_check_straggler(pos, rounds=6, interval=0.2):
+                """Repeatedly checks for, then immediately kills, any untagged (non-test) Fillager --
+                several short rounds per outer health-poll cycle instead of one long one, so a straggler
+                that spawns and attacks between two samples has a MUCH narrower window to do so undetected
+                (see the fix comment above this function for the real CI failure that motivated shrinking
+                this window rather than just tolerating more hits). Density is refreshed by the caller once
+                per outer cycle, same cadence as before -- only the straggler sweep/check itself is tightened."""
+                seen = False
+                for _ in range(rounds):
+                    process.stdin.write(
+                        'execute if entity @e[type=dynamicpopulation:fillager,tag=!dpop_test_entity] '
+                        'run say DPOP_STRAGGLER_PRESENT\n'
+                    )
+                    process.stdin.write('kill @e[type=dynamicpopulation:fillager,tag=!dpop_test_entity]\n')
+                    process.stdin.flush()
+                    if any("DPOP_STRAGGLER_PRESENT" in line for line in drain_for(interval)):
+                        seen = True
+                return seen
 
             # Exactly one unexplained hit is tolerated, for one specific, structural, non-buggy reason:
             # vanilla's own Goal/TargetGoal re-evaluation cadence is not every single tick, so a melee swing
@@ -533,7 +557,7 @@ def boot(root):
             attacker_stopped = True
             running_baseline = last_zombie_health
             for _ in range(8):
-                had_straggler = straggler_present(attacker_pos)
+                had_straggler = sweep_and_check_straggler(attacker_pos)
                 refresh_density(attacker_pos)
                 health = query_health_unambiguous("dpop_attacker_check_zombie", "Zombie")
                 if health is None:
