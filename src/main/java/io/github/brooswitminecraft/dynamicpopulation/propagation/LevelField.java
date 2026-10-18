@@ -2,6 +2,7 @@ package io.github.brooswitminecraft.dynamicpopulation.propagation;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import io.github.brooswitminecraft.dynamicpopulation.cellfield.CellFieldRecord;
 import io.github.brooswitminecraft.dynamicpopulation.cellfield.CellFieldStorage;
@@ -9,17 +10,25 @@ import io.github.brooswitminecraft.dynamicpopulation.cellfield.CellGrid;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.neoforged.neoforge.attachment.AttachmentType;
 import net.minecraft.world.level.chunk.LevelChunk;
 
 /**
- * The field of one level, backed by the cell_field attachments of loaded anchor chunks. A cell whose anchor
- * chunk is not loaded, or whose stored data is preserved-as-corrupt, does not take part (it is not traversable).
+ * The field of one level, backed by one faction's cell-field attachment on the loaded anchor chunks. A cell
+ * whose anchor chunk is not loaded, or whose stored data is preserved-as-corrupt, does not take part (it is
+ * not traversable).
  *
  * <p>Public (not package-private): the king package reuses this exact glue to read/raise the real cell field
- * near a King, rather than re-deriving a second NeoForge bridge to the same {@code cell_field} attachment.
+ * near a King, rather than re-deriving a second NeoForge bridge to the same attachment.
+ *
+ * <p>MINECRAFT-390: parameterized over WHICH attachment to read/write ({@link #LevelField(ServerLevel)}
+ * defaults to {@link CellFieldStorage#CELL_FIELD}, the original Villager/Fillager field, for every
+ * pre-existing call site) so the exact same traversal/decode/encode glue serves all three factions' fields
+ * without duplicating this class.
  */
 public final class LevelField implements Propagation.Field {
     private final ServerLevel level;
+    private final Supplier<AttachmentType<CellFieldRecord>> attachment;
     private final int cellSize;
     private final int footprint;
     private final int layers;
@@ -28,7 +37,12 @@ public final class LevelField implements Propagation.Field {
     private final Map<CellKey, Boolean> traversableCache = new HashMap<>();
 
     public LevelField(ServerLevel level) {
+        this(level, CellFieldStorage.CELL_FIELD);
+    }
+
+    public LevelField(ServerLevel level, Supplier<AttachmentType<CellFieldRecord>> attachment) {
         this.level = level;
+        this.attachment = attachment;
         var config = DynamicPopulationConfig.get();
         this.cellSize = config.cellSize();
         this.footprint = CellGrid.footprintChunks(cellSize);
@@ -41,11 +55,11 @@ public final class LevelField implements Propagation.Field {
         return new CellKey(Math.floorDiv(pos.getX(), cellSize), CellGrid.layerIndex(pos.getY(), minY, cellSize), Math.floorDiv(pos.getZ(), cellSize));
     }
 
-    int layers() {
+    public int layers() {
         return layers;
     }
 
-    int cellSize() {
+    public int cellSize() {
         return cellSize;
     }
 
@@ -61,7 +75,7 @@ public final class LevelField implements Propagation.Field {
         if (chunk == null) {
             return null;
         }
-        return chunk.getData(CellFieldStorage.CELL_FIELD.get()) instanceof CellFieldRecord.Loaded l ? l : null;
+        return chunk.getData(attachment.get()) instanceof CellFieldRecord.Loaded l ? l : null;
     }
 
     @Override
@@ -132,7 +146,7 @@ public final class LevelField implements Propagation.Field {
     }
 
     /** Why a cell does not take part, for the debug command; null if it does. */
-    String blockedReason(CellKey cell) {
+    public String blockedReason(CellKey cell) {
         if (cell.layer() < 0 || cell.layer() >= layers) {
             return "outside world height";
         }

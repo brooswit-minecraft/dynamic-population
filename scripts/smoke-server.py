@@ -77,6 +77,76 @@ def boot(root):
                 raise RuntimeError("Server exited while creating the Fillager")
             if "DPOP_FILLAGER_SPAWN_OK" in line:
                 break
+        # MINECRAFT-390: confirm presence (not crashing) of one King entity of each faction, same pattern
+        # as the Fillager summon check above. This is a BOOT/SUMMON smoke test only -- it does NOT prove
+        # real-time battle-line combat, threshold transitions, or any client-visible rendering/animation;
+        # see the PR description for what remains unverified by this script.
+        king_checks = [
+            ("dynamicpopulation:villager_king", "dpop_smoke_vk", "DPOP_VILLAGER_KING_SPAWN_OK"),
+            ("dynamicpopulation:zombie_king", "dpop_smoke_zk", "DPOP_ZOMBIE_KING_SPAWN_OK"),
+            ("dynamicpopulation:skeleton_king", "dpop_smoke_sk", "DPOP_SKELETON_KING_SPAWN_OK"),
+        ]
+        for i, (entity_type, tag, marker) in enumerate(king_checks):
+            process.stdin.write(f'summon {entity_type} {10 + i * 5} -60 0 {{Tags:["{tag}"]}}\n')
+            process.stdin.write(f'execute if entity @e[type={entity_type},tag={tag}] run say {marker}\n')
+            process.stdin.flush()
+            deadline = time.monotonic() + 30
+            while True:
+                line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+                if line is None:
+                    raise RuntimeError(f"Server exited while creating the King ({entity_type})")
+                if marker in line:
+                    break
+        print("Verified all three King entity types summon without crashing", flush=True)
+
+        # MINECRAFT-390 scope item 7: verify the EXISTING /dpop king settle command route itself (not just
+        # a raw /summon) creates the new visible King entities correctly, for every faction. The server
+        # console itself already has full permission, so no /op is needed.
+        settled_factions = set()
+        for literal, faction, marker in [
+            ("settle villager", "VILLAGER", "DPOP_SETTLE_VILLAGER"),
+            ("settle zombie", "ZOMBIE", "DPOP_SETTLE_ZOMBIE"),
+            ("settle skeleton", "SKELETON", "DPOP_SETTLE_SKELETON"),
+        ]:
+            process.stdin.write(f'execute positioned 100 -59 0 run dpop king {literal}\n')
+            process.stdin.write(f'say {marker}_ISSUED\n')
+            process.stdin.flush()
+            deadline = time.monotonic() + 30
+            settled = False
+            while True:
+                line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+                if line is None:
+                    raise RuntimeError(f"Server exited while running /dpop king {literal}")
+                if f"a {faction} King settled at" in line:
+                    settled = True
+                if f"{marker}_ISSUED" in line:
+                    break
+            if not settled:
+                raise RuntimeError(
+                    f"/dpop king {literal} did not report settling (territory/uniqueness check may have "
+                    f"rejected it) -- see captured output above."
+                )
+            settled_factions.add(faction)
+        # Confirm the settle command actually created a real, queryable entity of each type (not just a
+        # record), by querying the live entity count directly -- distinct from the DPOP_*_SPAWN_OK /summon
+        # check above, which only proves the entity TYPE itself can be summoned, not that the settle command
+        # route wires through to a real spawn.
+        process.stdin.write(
+            'execute if entity @e[type=dynamicpopulation:villager_king] '
+            'if entity @e[type=dynamicpopulation:zombie_king] '
+            'if entity @e[type=dynamicpopulation:skeleton_king] '
+            'run say DPOP_KING_SETTLE_COMMAND_OK\n'
+        )
+        process.stdin.flush()
+        deadline = time.monotonic() + 30
+        while True:
+            line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+            if line is None:
+                raise RuntimeError("Server exited while verifying /dpop king settle created real entities")
+            if "DPOP_KING_SETTLE_COMMAND_OK" in line:
+                break
+        assert settled_factions == {"VILLAGER", "ZOMBIE", "SKELETON"}
+        print("Verified /dpop king settle creates real King entities for every faction", flush=True)
         process.stdin.write("stop\n")
         process.stdin.flush()
         rc = process.wait(timeout=60)

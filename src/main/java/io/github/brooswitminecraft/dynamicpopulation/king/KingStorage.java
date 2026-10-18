@@ -4,6 +4,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 import io.github.brooswitminecraft.dynamicpopulation.DynamicPopulationMod;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -33,6 +34,13 @@ public final class KingStorage {
     private static final String KEY_X = "x";
     private static final String KEY_Y = "y";
     private static final String KEY_Z = "z";
+    /**
+     * MINECRAFT-390: new key, additive -- absent on any record written before this story. {@link #read}
+     * treats its absence (or an unparseable value) as {@link Faction#VILLAGER}, the migration this ticket's
+     * test coverage calls for: every King that existed before this story IS a Villager King, by definition,
+     * so defaulting to it on a missing/old-format entry is not a guess, it is the only correct answer.
+     */
+    private static final String KEY_TYPE = "type";
 
     public static final Supplier<AttachmentType<KingRecord>> KING_REGISTRY = TYPES.register("king_registry", () ->
         AttachmentType.builder((IAttachmentHolder holder) -> new KingRecord())
@@ -44,7 +52,7 @@ public final class KingStorage {
                     for (int i = 0; i < list.size(); i++) {
                         CompoundTag entry = list.getCompound(i);
                         record.add(new KingRecord.Entry(entry.getUUID(KEY_ID), entry.getInt(KEY_X), entry.getInt(KEY_Y),
-                            entry.getInt(KEY_Z)));
+                            entry.getInt(KEY_Z), readFaction(entry)));
                     }
                     return record;
                 }
@@ -59,12 +67,18 @@ public final class KingStorage {
                         entryTag.putInt(KEY_X, entry.x());
                         entryTag.putInt(KEY_Y, entry.y());
                         entryTag.putInt(KEY_Z, entry.z());
+                        entryTag.putString(KEY_TYPE, entry.faction().name());
                         list.add(entryTag);
                     }
                     tag.put(KEY_KINGS, list);
                     return tag;
                 }
             }).build());
+
+    /** NBT-to-plain-value glue; the actual migration decision is {@link KingFactionMigration#readFaction}, pure-testable on its own. */
+    private static Faction readFaction(CompoundTag entryTag) {
+        return KingFactionMigration.readFaction(entryTag.contains(KEY_TYPE, Tag.TAG_STRING) ? entryTag.getString(KEY_TYPE) : null);
+    }
 
     private KingStorage() { }
 

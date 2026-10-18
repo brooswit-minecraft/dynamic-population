@@ -40,21 +40,40 @@ public final class CellFieldStorage {
     private static final String KEY_ANCHOR_Z = "anchorZ";
     private static final String KEY_ENTRIES = "entries";
 
-    public static final Supplier<AttachmentType<CellFieldRecord>> CELL_FIELD = TYPES.register("cell_field", () ->
-        AttachmentType.builder(CellFieldStorage::defaultValue)
-            .serialize(new IAttachmentSerializer<CompoundTag, CellFieldRecord>() {
-                @Override
-                public CellFieldRecord read(IAttachmentHolder holder, CompoundTag tag, HolderLookup.Provider provider) {
-                    return CellFieldStorage.read(holder, tag);
-                }
+    /** Villager/Fillager population density -- the original DPOP-4 attachment, unchanged key/format. */
+    public static final Supplier<AttachmentType<CellFieldRecord>> CELL_FIELD = registerField("cell_field");
 
-                @Override
-                public CompoundTag write(CellFieldRecord record, HolderLookup.Provider provider) {
-                    return CellFieldStorage.write(record);
-                }
-            }).build());
+    /**
+     * MINECRAFT-390: Zombie and Skeleton each get their own independent density attachment, registered via
+     * the exact same generic encode/decode glue as {@link #CELL_FIELD} -- a brand-new attachment name, never
+     * a reinterpretation of the existing {@code cell_field} entries, so no migration is needed for existing
+     * worlds (an old save simply has no data under these new keys yet, which decodes as an empty
+     * {@link CellFieldRecord.Loaded}, identical to a never-visited {@code cell_field} chunk). This also
+     * means the three factions' densities can never be confused with one another: each lives in its own
+     * chunk attachment, read/written through its own {@code LevelField} instance (see
+     * {@code PopulationSimulation#field(ServerLevel, Faction)}).
+     */
+    public static final Supplier<AttachmentType<CellFieldRecord>> ZOMBIE_FIELD = registerField("zombie_cell_field");
+    public static final Supplier<AttachmentType<CellFieldRecord>> SKELETON_FIELD = registerField("skeleton_cell_field");
 
     private CellFieldStorage() { }
+
+    /** Registers one named cell-field attachment, sharing the exact same decode/encode glue every field uses. */
+    private static Supplier<AttachmentType<CellFieldRecord>> registerField(String name) {
+        return TYPES.register(name, () ->
+            AttachmentType.builder(CellFieldStorage::defaultValue)
+                .serialize(new IAttachmentSerializer<CompoundTag, CellFieldRecord>() {
+                    @Override
+                    public CellFieldRecord read(IAttachmentHolder holder, CompoundTag tag, HolderLookup.Provider provider) {
+                        return CellFieldStorage.read(holder, tag);
+                    }
+
+                    @Override
+                    public CompoundTag write(CellFieldRecord record, HolderLookup.Provider provider) {
+                        return CellFieldStorage.write(record);
+                    }
+                }).build());
+    }
 
     public static void register(IEventBus modEventBus) {
         TYPES.register(modEventBus);

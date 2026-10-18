@@ -1,6 +1,8 @@
 package io.github.brooswitminecraft.dynamicpopulation.entity;
 
+import io.github.brooswitminecraft.dynamicpopulation.combat.PopulationCombatTargetGoal;
 import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerPromotion;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -10,6 +12,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
 import net.minecraft.world.entity.ai.goal.PanicGoal;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.player.Player;
@@ -63,12 +66,29 @@ public final class Fillager extends PathfinderMob {
         return EntityType.Builder.of(Fillager::new, MobCategory.CREATURE).sized(0.6F, 1.95F).clientTrackingRange(8);
     }
 
+    /**
+     * MINECRAFT-390 scope item 6: the ONE narrowly-scoped exception to MINECRAFT-389's "never retaliate or
+     * acquire a combat target" rule -- a {@code targetSelector} goal ({@link PopulationCombatTargetGoal})
+     * that can only ever acquire a target when THIS Fillager's own local Villager-faction density is at or
+     * above {@code PopulationCombatEligibility.THRESHOLD_PPT} (500 on the existing 0..1000 scale), and only
+     * against an opposing-faction NON-PERSISTENT filler (see {@code PopulationCombatTargeting}). Below that
+     * threshold the goal's own {@code canUse()} always returns false, so a Fillager that never crosses it
+     * behaves EXACTLY as MINECRAFT-389 specified: it still never retaliates or acquires a target. This is
+     * additive only -- it does not touch {@code FillagerTargetCompat} (other mobs targeting a Fillager) or
+     * loosen any check in {@link PanicGoal} itself.
+     *
+     * <p>{@link MeleeAttackGoal} is the attack-EXECUTION half this goal needs but Fillager never had before
+     * (a {@code targetSelector} goal only sets {@code getTarget()}; nothing walks toward or swings at that
+     * target without a {@code goalSelector} goal that reads it) -- see {@link PopulationCombatTargetGoal}'s
+     * own class doc for the full goal-priority writeup (PanicGoal at goalSelector priority 1 vs this at
+     * priority 2, sharing the {@code MOVE} flag, so fleeing always preempts attacking whenever both could
+     * apply).
+     */
     @Override
     protected void registerGoals() {
-        // Fillagers are background population, not AI villagers: exactly one goal (flee-on-hurt), and
-        // deliberately ZERO targetSelector goals -- see PANIC_SPEED_MODIFIER's javadoc for why that alone is
-        // enough to guarantee a Fillager never retaliates or acquires a combat target.
         this.goalSelector.addGoal(1, new PanicGoal(this, PANIC_SPEED_MODIFIER));
+        this.goalSelector.addGoal(2, new MeleeAttackGoal(this, 1.0, true));
+        this.targetSelector.addGoal(1, new PopulationCombatTargetGoal(this, Faction.VILLAGER));
     }
 
     @Override
