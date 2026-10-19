@@ -186,4 +186,53 @@ class KingEntitySyncTest {
         var toSpawn = KingEntitySync.needingFirstSpawn(missing, e -> true); // stale anchor A IS loaded
         assertTrue(toSpawn.isEmpty(), "no duplicate must ever be spawned at the stale anchor for a King already confirmed real");
     }
+
+    // --- [P1/P3 re-review fixes] insertion-confirmation gating: no phantom source, no permanent retry block ---
+
+    /**
+     * (a) A failed spawn (insertion never actually confirmed -- modeled by simply never calling
+     * {@code markHasEntity}, exactly what the fixed {@code sync} glue does on a failed
+     * {@code level.getEntity(id) != null} check) must leave {@code hasEntity} false, so the record is
+     * STILL eligible for a first-spawn attempt on the very next sync call -- never permanently blocked,
+     * and never silently promoted to "confirmed real" without a real entity behind it.
+     */
+    @Test
+    void aFailedSpawnLeavesHasEntityFalseAndIsRetriedNextSync() {
+        UUID id = UUID.randomUUID();
+        KingRecord record = new KingRecord();
+        record.add(legacyEntry(id, Faction.VILLAGER)); // genuine legacy record, anchor chunk loaded
+
+        // Sync tick 1 (modeled): a spawn was attempted for this id, but insertion was never confirmed, so
+        // (per the fixed glue) markHasEntity is never called -- hasEntity stays exactly as it was.
+        assertFalse(record.kings().get(0).hasEntity(), "a failed/unconfirmed insertion must never be promoted to hasEntity=true");
+
+        // Sync tick 2: entity still not loaded (the failed spawn landed no real entity), anchor still loaded.
+        var missing = KingEntitySync.missingEntities(record.kings(), Set.<UUID>of());
+        var toSpawn = KingEntitySync.needingFirstSpawn(missing, e -> true);
+        assertEquals(1, toSpawn.size(), "a failed insertion must not permanently block retry");
+        assertEquals(id, toSpawn.get(0).id());
+    }
+
+    /**
+     * (c) An entity observed loaded at EXACTLY its already-stored anchor position (the legacy-migration
+     * case the reviewer called out: a record whose migration-spawned entity happens to land back at its
+     * own stored anchor) must still be marked {@code hasEntity} true -- the fixed {@code sync} glue calls
+     * {@code updatePosition} UNCONDITIONALLY now, not only when the position actually differs.
+     */
+    @Test
+    void observingAnEntityAtUnchangedCoordinatesStillMarksHasEntityTrue() {
+        UUID id = UUID.randomUUID();
+        KingRecord record = new KingRecord();
+        record.add(legacyEntry(id, Faction.ZOMBIE)); // hasEntity=false, stored at (0, 64, 0)
+
+        record.updatePosition(id, 0, 64, 0); // same coordinates -- must NOT be treated as a no-op
+
+        var updated = record.kings().get(0);
+        assertTrue(updated.hasEntity(), "observing a real loaded entity for this id must confirm "
+            + "hasEntity even when its position happens to exactly match the stored anchor -- otherwise "
+            + "this record would be spawned a SECOND time the very next sync tick");
+        assertEquals(0, updated.x());
+        assertEquals(64, updated.y());
+        assertEquals(0, updated.z());
+    }
 }

@@ -58,11 +58,26 @@ public final class KingEntitySync {
     }
 
     /**
-     * Refreshes every LOADED King's stored position to where it actually currently is (see
-     * {@link KingRecord#updatePosition}'s own doc), then spawns exactly one entity for every record that
-     * {@link #needingFirstSpawn} says genuinely needs its first-ever entity -- never a second entity for an
-     * id already confirmed real (see that method's own doc for why this, not just the position refresh,
-     * is what actually closes the duplicate-entity bug).
+     * Refreshes every LOADED King's stored position to where it actually currently is -- UNCONDITIONALLY
+     * (see {@link KingRecord#updatePosition}'s own doc), not only when the position actually changed:
+     * [P1 review fix] observing a real, loaded entity for an id is itself the confirmation that id's King
+     * has materialized, REGARDLESS of whether it happens to still sit at its stored anchor. A legacy
+     * record whose migration-spawned entity lands back at its own stored anchor position would otherwise
+     * never take the (old, position-changed-only) branch that marks {@code hasEntity}, and so would be
+     * spawned a SECOND time the very next sync tick (still "missing" by id-set, still {@code hasEntity}
+     * {@code false}, still anchor-loaded) -- {@code updatePosition} always marks {@code hasEntity} true as
+     * well as refreshing position, so calling it unconditionally here closes that gap.
+     *
+     * <p>Then spawns exactly one entity for every record that {@link #needingFirstSpawn} says genuinely
+     * needs its first-ever entity -- never a second entity for an id already confirmed real (see that
+     * method's own doc). [P1 review fix] {@code hasEntity} is marked true ONLY after confirming the spawn
+     * actually inserted a real entity ({@code level.getEntity(id) != null}), mirroring the exact check
+     * {@link KingManager#settle} and {@code KingNaturalFounding.attemptSite} both use. A silently-failed
+     * insertion leaves {@code hasEntity} false, so the record stays exactly as "missing, not yet
+     * materialized" as it was before this call -- the NEXT sync call naturally retries it, rather than
+     * this failure permanently blocking any future spawn attempt (which marking {@code hasEntity} true
+     * unconditionally would have done) or permanently seeding/counting a phantom source with no real
+     * entity behind it.
      */
     public static void sync(ServerLevel level) {
         KingRecord record = level.getData(KingStorage.KING_REGISTRY.get());
@@ -74,16 +89,18 @@ public final class KingEntitySync {
             }
             loadedIds.add(entry.id());
             BlockPos current = entity.blockPosition();
-            if (current.getX() != entry.x() || current.getY() != entry.y() || current.getZ() != entry.z()) {
-                record.updatePosition(entry.id(), current.getX(), current.getY(), current.getZ());
-            }
+            record.updatePosition(entry.id(), current.getX(), current.getY(), current.getZ());
         }
         List<KingRecord.Entry> missing = missingEntities(record.kings(), loadedIds);
         List<KingRecord.Entry> toSpawn = needingFirstSpawn(missing,
             entry -> level.hasChunk(entry.x() >> 4, entry.z() >> 4));
         for (KingRecord.Entry entry : toSpawn) {
             KingManager.spawnKingEntity(level, new BlockPos(entry.x(), entry.y(), entry.z()), entry.faction(), entry.id());
-            record.markHasEntity(entry.id());
+            if (level.getEntity(entry.id()) != null) {
+                record.markHasEntity(entry.id());
+            }
+            // else: insertion failed silently; hasEntity stays false, so the NEXT sync call naturally
+            // retries this id via needingFirstSpawn again -- never a permanent block, never a phantom source.
         }
     }
 }

@@ -87,7 +87,7 @@ public final class KingManager {
 
     /** Outcome of a settle attempt, in the order they're checked. */
     public enum SettleResult {
-        SETTLED, UNSUITABLE_TERRITORY, NOT_UNIQUE
+        SETTLED, UNSUITABLE_TERRITORY, NOT_UNIQUE, INSERTION_FAILED
     }
 
     /**
@@ -95,6 +95,15 @@ public final class KingManager {
      * (same-faction) uniqueness, in that order; on success, also spawns the real, visible, persistent King
      * entity -- the record's id IS the spawned entity's UUID (see {@link KingRecord.Entry}'s own doc), so
      * there is exactly one source of truth correlating the two, never two independently-created ids.
+     *
+     * <p>[P1 review fix] {@link #finalizeKingEntity} never checked whether {@code addFreshEntity} actually
+     * succeeded, so a registry {@link KingRecord.Entry} with {@code hasEntity} true could previously be
+     * committed for an entity that was never really inserted -- a phantom source seeding/counting as a
+     * King forever, with no way to retry (the ticket's own original description already required "check
+     * entity insertion succeeds before committing a source"; natural founding's own
+     * {@code KingNaturalFounding.attemptSite} already did this correctly). Verifying
+     * {@code level.getEntity(king.getUUID()) != null} here, and returning {@link SettleResult#INSERTION_FAILED}
+     * without committing any record at all on failure, closes that gap for the command path too.
      */
     public static SettleResult settle(ServerLevel level, BlockPos pos, Faction faction) {
         if (!suitableTerritory(level, pos)) {
@@ -104,6 +113,9 @@ public final class KingManager {
             return SettleResult.NOT_UNIQUE;
         }
         Mob king = spawnKingEntity(level, pos, faction, UUID.randomUUID());
+        if (level.getEntity(king.getUUID()) == null) {
+            return SettleResult.INSERTION_FAILED;
+        }
         level.getData(KingStorage.KING_REGISTRY.get())
             .add(new KingRecord.Entry(king.getUUID(), pos.getX(), pos.getY(), pos.getZ(), faction, true));
         return SettleResult.SETTLED;
