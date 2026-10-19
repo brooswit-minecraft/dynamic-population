@@ -295,22 +295,27 @@ def boot(root):
         # a raw /summon) creates the new visible King entities correctly, for every faction. The server
         # console itself already has full permission, so no /op is needed.
         #
-        # MINECRAFT-425 review note: the final verification below queries by bare entity TYPE
-        # (`@e[type=dynamicpopulation:villager_king]`, etc.), which a reviewer correctly flagged as
-        # satisfiable by ANY entity of that type anywhere in the loaded world -- including this script's
-        # OWN raw-/summon-ed King entities (dpop_smoke_vk/zk/sk) above, were they still alive. The
-        # MINECRAFT-425 death-decrement section now deliberately runs BEFORE this one (so it isn't itself
-        # confounded by a settled King's seeding -- see that section's own comment), killing those
-        # raw-summoned Kings first, which already removes the masking this check used to be exposed to --
-        # by the time this runs, the ONLY entities of each King type anywhere are the ones settle itself
-        # just created. A position-based tag was attempted here to make that explicit regardless of
-        # ordering (narrowing to the exact entity that reported settling at this exact position), but every
-        # distance-based selector variant tried (`@e[x=,y=,z=,distance=..5]`, `execute positioned ... as
-        # @e[distance=..5]`, `execute positioned ... run tag @e[distance=..5] add ...`) reproducibly found
-        # zero matches in CI despite the entity verifiably existing right there (confirmed by the settle
-        # command's own "a FACTION King settled at BlockPos{...}" log line moments earlier) -- undiagnosed,
-        # and not worth blocking this ticket's actual production-code fix on further. Reverted to the
-        # type-only query, which the reordering above already makes correct in practice.
+        # MINECRAFT-425 root cause (confirmed via an explicit per-type present/missing diagnostic, CI run
+        # 39267168480: all three types reported MISSING immediately after settle itself reported SETTLED
+        # for all three): x=100,z=0 was never force-loaded, unlike every OTHER remote test position in this
+        # file (battle_pos, persist_pos, etc., all preceded by their own `forceload add`). `settle` still
+        # reports SETTLED because `Level#addFreshEntity` itself does not require the target chunk to be
+        # loaded/ticking to succeed -- but an entity inserted into a non-loaded chunk is invisible to EVERY
+        # `@e` selector query (type-only, tag-only, or distance-based alike) until that chunk actually
+        # loads, which explains why every selector variant tried here previously (bare type, a settle-
+        # specific tag via three different distance-selector forms) all failed identically: the entity
+        # genuinely wasn't selector-visible yet, regardless of which selector shape was used. Force-loading
+        # BEFORE settling, the same way every other remote position in this file already does, is the fix.
+        process.stdin.write('forceload add 96 -16 112 16\n')
+        process.stdin.flush()
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            try:
+                line = lines.get(timeout=max(0.01, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if line is None:
+                raise RuntimeError("Server exited while force-loading the King settle location")
         settled_factions = set()
         for literal, faction, marker in [
             ("settle villager", "VILLAGER", "DPOP_SETTLE_VILLAGER"),
