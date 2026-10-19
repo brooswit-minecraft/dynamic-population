@@ -29,6 +29,46 @@ READY_MARKER = 'Done ('
 HELP_MARKER = 'For help, type "help"'
 
 
+def extract_combat_hits(captured_lines, victim_tag):
+    """Review fix (P2, round 6, smoke-test harness finding #1): parses CombatDamageLogging's
+    'DPOP_COMBAT_HIT' server-log lines for every hit landed on the entity carrying victim_tag,
+    returning the ATTACKER's own logged scoreboard tags for each such hit (a set[str] per hit,
+    possibly empty if the damage had no entity source at all, e.g. environmental).
+
+    This replaces the previous "some untagged Fillager existed somewhere nearby" correlation with
+    real per-hit attribution: the caller can check whether a specific hit's attacker tag-set
+    contains the exact tag given to the ONE entity under test, which is proof, not inference.
+
+    Module-level (not nested in boot()) specifically so scripts/test_smoke_server.py can exercise
+    this exact parser directly against real/synthetic DPOP_COMBAT_HIT log lines without booting a
+    server -- see MINECRAFT-420."""
+    hits = []
+    pattern = re.compile(r"victim_tags=(\S+) attacker=\[(.*?)\] damage=")
+    for line in captured_lines:
+        if "DPOP_COMBAT_HIT" not in line:
+            continue
+        match = pattern.search(line)
+        if not match:
+            continue
+        victim_tags = set(match.group(1).split(","))
+        if victim_tag not in victim_tags:
+            continue
+        attacker_field = match.group(2)
+        tag_match = re.search(r"tags=(\S+)$", attacker_field)
+        attacker_tags = set(tag_match.group(1).split(",")) if tag_match else set()
+        hits.append(attacker_tags)
+    return hits
+
+
+def attributed_combat_hits(captured_lines, victim_tag):
+    """MINECRAFT-420: the real-combat-vs-environmental-damage filter the persistence-exclusion check
+    (target side) applies on top of extract_combat_hits -- a hit with an empty attacker-tag set (e.g.
+    "attacker=[none(source=onFire)]": sun-burn, fire, lava, fall damage, ...) has no entity attacker at
+    all, so it can never be evidence that a PersistenceRequired entity was actually targeted in combat.
+    Returns only the hits that DO have a real entity attacker, each as that attacker's own tag set."""
+    return [tags for tags in extract_combat_hits(captured_lines, victim_tag) if tags]
+
+
 def boot(root):
     process = subprocess.Popen(
         ["bash", "run.sh", "nogui"], cwd=root, stdin=subprocess.PIPE,
@@ -262,32 +302,6 @@ def boot(root):
             process.stdin.flush()
             return drain_for(0.3)
 
-        def extract_combat_hits(captured_lines, victim_tag):
-            """Review fix (P2, round 6, smoke-test harness finding #1): parses CombatDamageLogging's
-            'DPOP_COMBAT_HIT' server-log lines for every hit landed on the entity carrying victim_tag,
-            returning the ATTACKER's own logged scoreboard tags for each such hit (a set[str] per hit,
-            possibly empty if the damage had no entity source at all, e.g. environmental).
-
-            This replaces the previous "some untagged Fillager existed somewhere nearby" correlation with
-            real per-hit attribution: the caller can check whether a specific hit's attacker tag-set
-            contains the exact tag given to the ONE entity under test, which is proof, not inference."""
-            hits = []
-            pattern = re.compile(r"victim_tags=(\S+) attacker=\[(.*?)\] damage=")
-            for line in captured_lines:
-                if "DPOP_COMBAT_HIT" not in line:
-                    continue
-                match = pattern.search(line)
-                if not match:
-                    continue
-                victim_tags = set(match.group(1).split(","))
-                if victim_tag not in victim_tags:
-                    continue
-                attacker_field = match.group(2)
-                tag_match = re.search(r"tags=(\S+)$", attacker_field)
-                attacker_tags = set(tag_match.group(1).split(",")) if tag_match else set()
-                hits.append(attacker_tags)
-            return hits
-
         villager_health = query_health_unambiguous("dpop_battle_villager", "entity.dynamicpopulation.fillager")
         zombie_health = query_health_unambiguous("dpop_battle_zombie", "Zombie")
         battle_resolved = False
@@ -422,11 +436,7 @@ def boot(root):
             scan_end = len(seen)
             new_lines = seen[hit_scan_index:scan_end]
             hit_scan_index = scan_end
-            for attacker_tags in extract_combat_hits(new_lines, "dpop_persistent_check"):
-                if not attacker_tags:
-                    # No entity attacker tags at all (e.g. "attacker=[none(source=onFire)]") -- environmental
-                    # damage, not a combat hit, and not evidence persistence-exclusion failed as a target.
-                    continue
+            for attacker_tags in attributed_combat_hits(new_lines, "dpop_persistent_check"):
                 hits_observed += 1
                 if hits_observed > max_tolerated_hits:
                     raise RuntimeError(
