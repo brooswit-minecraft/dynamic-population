@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicpopulation.king;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -34,24 +35,78 @@ public final class KingEntitySync {
     }
 
     /**
-     * Spawn exactly one entity for every King record currently missing its entity in {@code level}.
+     * Pure (MINECRAFT-414 review fix, [P1]): of the records already known to have no currently loaded
+     * entity (see {@link #missingEntities}), which ones genuinely need a FIRST-EVER spawn right now.
      *
-     * <p>Only considers a record whose CHUNK IS CURRENTLY LOADED: {@code level.getEntity(id)} only ever
-     * finds entities belonging to loaded chunks, so an unloaded-chunk record would otherwise look
-     * "missing" purely because nothing has loaded it back in yet -- spawning a second entity for it would
-     * be exactly the duplicate-entity bug this ticket forbids. Vanilla's own entity persistence always
-     * reloads a {@code persistenceRequired} entity together with its chunk, with no lazy delay, so once a
-     * King's chunk IS loaded, "no entity found" really does mean "never spawned yet" (a legacy record).
+     * <p>This is what actually ELIMINATES the duplicate-entity bug, not merely narrows it: a record with
+     * {@link KingRecord.Entry#hasEntity()} already {@code true} is excluded UNCONDITIONALLY here, before
+     * {@code anchorChunkLoaded} is even consulted. The earlier (position-refresh-only) fix only closed the
+     * race within a single sync interval -- a King observed at A that wanders to B and has B's chunk
+     * unload again, ALL BETWEEN two sync calls (the default interval is {@code king_seed_interval_ticks},
+     * 20 ticks, not every tick), would never have had its anchor refreshed to B at all, so a still-loaded,
+     * stale anchor A (e.g. inside spawn chunks) would read as "missing, anchor loaded" and wrongly spawn a
+     * second entity. Once {@code hasEntity} is {@code true} for an id, THIS function never again returns
+     * that id, no matter what any anchor position says -- the only way a {@code true}-{@code hasEntity}
+     * King's entity ever reappears is vanilla's own entity persistence reloading it with its REAL current
+     * chunk, which this code never races against because it never attempts to spawn a replacement at all.
+     * {@code anchorChunkLoaded} only matters for a GENUINE legacy record ({@code hasEntity} still
+     * {@code false}), where spawning for the first time ever is correct, not a duplicate.
+     */
+    public static List<KingRecord.Entry> needingFirstSpawn(List<KingRecord.Entry> missing,
+            Predicate<KingRecord.Entry> anchorChunkLoaded) {
+        return missing.stream().filter(entry -> !entry.hasEntity() && anchorChunkLoaded.test(entry)).toList();
+    }
+
+    /**
+     * Refreshes every LOADED King's stored position to where it actually currently is -- UNCONDITIONALLY
+     * (see {@link KingRecord#updatePosition}'s own doc), not only when the position actually changed:
+     * [P1 review fix] observing a real, loaded entity for an id is itself the confirmation that id's King
+     * has materialized, REGARDLESS of whether it happens to still sit at its stored anchor. A legacy
+     * record whose migration-spawned entity lands back at its own stored anchor position would otherwise
+     * never take the (old, position-changed-only) branch that marks {@code hasEntity}, and so would be
+     * spawned a SECOND time the very next sync tick (still "missing" by id-set, still {@code hasEntity}
+     * {@code false}, still anchor-loaded) -- {@code updatePosition} always marks {@code hasEntity} true as
+     * well as refreshing position, so calling it unconditionally here closes that gap.
+     *
+     * <p>Then spawns exactly one entity for every record that {@link #needingFirstSpawn} says genuinely
+     * needs its first-ever entity -- never a second entity for an id already confirmed real (see that
+     * method's own doc). [P1 review fix] {@code hasEntity} is marked true ONLY after confirming the spawn
+     * actually inserted a real entity ({@code level.getEntity(id) != null}), mirroring the exact check
+     * {@link KingManager#settle} and {@code KingNaturalFounding.attemptSite} both use. A silently-failed
+     * insertion leaves {@code hasEntity} false, so the record stays exactly as "missing, not yet
+     * materialized" as it was before this call -- the NEXT sync call naturally retries it, rather than
+     * this failure permanently blocking any future spawn attempt (which marking {@code hasEntity} true
+     * unconditionally would have done) or permanently seeding/counting a phantom source with no real
+     * entity behind it.
      */
     public static void sync(ServerLevel level) {
-        for (KingRecord.Entry entry : KingManager.kings(level)) {
-            BlockPos pos = new BlockPos(entry.x(), entry.y(), entry.z());
-            if (!level.hasChunk(pos.getX() >> 4, pos.getZ() >> 4)) {
+        KingRecord record = level.getData(KingStorage.KING_REGISTRY.get());
+        Set<UUID> loadedIds = new HashSet<>();
+        for (KingRecord.Entry entry : List.copyOf(record.kings())) {
+            var entity = level.getEntity(entry.id());
+            if (entity == null) {
                 continue;
             }
-            if (level.getEntity(entry.id()) == null) {
-                KingManager.spawnKingEntity(level, pos, entry.faction(), entry.id());
+            loadedIds.add(entry.id());
+            BlockPos current = entity.blockPosition();
+            record.updatePosition(entry.id(), current.getX(), current.getY(), current.getZ());
+        }
+        List<KingRecord.Entry> missing = missingEntities(record.kings(), loadedIds);
+        List<KingRecord.Entry> toSpawn = needingFirstSpawn(missing,
+            entry -> level.hasChunk(entry.x() >> 4, entry.z() >> 4));
+        for (KingRecord.Entry entry : toSpawn) {
+            // [P1 review fix, round 2] Use KingManager.spawnKingEntity's OWN boolean result (which is
+            // Level#addFreshEntity's own result) as the success signal -- NOT a subsequent
+            // level.getEntity(id) re-lookup, which a real dedicated server proved can momentarily lag a
+            // same-tick, same-call insertion in certain call paths (see KingManager.settle's own doc for
+            // the confirmed false-negative and its root cause).
+            boolean inserted = KingManager.spawnKingEntity(level,
+                new BlockPos(entry.x(), entry.y(), entry.z()), entry.faction(), entry.id());
+            if (inserted) {
+                record.markHasEntity(entry.id());
             }
+            // else: insertion failed; hasEntity stays false, so the NEXT sync call naturally retries this
+            // id via needingFirstSpawn again -- never a permanent block, never a phantom source.
         }
     }
 }
