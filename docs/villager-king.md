@@ -261,20 +261,34 @@ on success, spawns the real King entity.
 command source (any faction), if any — removes both its record and its
 entity.
 
-## Threshold-driven population battles ("battle lines") (MINECRAFT-390)
+## Threshold-driven population battles ("battle lines") (MINECRAFT-390, threshold corrected per-faction by MINECRAFT-426)
 
-At local faction density >= `PopulationCombatEligibility.THRESHOLD_PPT`
+At local faction density >= `PopulationCombatEligibility.thresholdFor(faction)`,
+that faction's non-persistent (filler) members start attacking the other
+non-persistent factions' members. Originally a single shared threshold
 (fixed at **500** on the EXISTING 0..1000 per-cell target-density scale —
-this is a correction of the original ticket text's "10000", which would
-have needed a scale expansion; 500 does not, since it reads the same scale
-`fillagers_per_full_cell`/`Propagation.CAPACITY` already use), that
-faction's non-persistent (filler) members start attacking the other
-non-persistent factions' members. Continuous/reactive, no hysteresis: this
-is re-checked every time the AI goal evaluates eligibility, so a density
-crossing back below 500 clears any in-progress target the same cycle — see
+a correction of the original ticket text's "10000", which would have
+needed a scale expansion; 500 does not, since it reads the same scale
+`fillagers_per_full_cell`/`Propagation.CAPACITY` already use). **MINECRAFT-426
+splits this threshold per faction**: Zombie and Skeleton keep the original
+**500** (`PopulationCombatEligibility.THRESHOLD_PPT`, unchanged); Villager
+(Fillager territorial combat) is corrected to **0**
+(`PopulationCombatEligibility.VILLAGER_THRESHOLD_PPT`) — i.e. a Fillager is
+eligible to initiate population-combat at ANY local Villager-faction
+density, including exactly zero, never gated by a density floor at all any
+more. Continuous/reactive, no hysteresis: this is re-checked every time the
+AI goal evaluates eligibility, so (for Zombie/Skeleton) a density crossing
+back below 500 clears any in-progress target the same cycle — see
 `PopulationCombatTargetGoal`'s own javadoc. Each faction becomes
 attacker-eligible purely from its OWN local density; the opposing faction
 does NOT need to also be at/above threshold.
+
+Do not confuse this zero-density FILLAGER TERRITORIAL threshold change with
+the separate, independent MINECRAFT-426 Skeleton behaviors documented below
+("Ordinary Skeleton hostility toward villagers/Fillagers" and "Villager fear
+of Skeletons") — those are plain vanilla-style hostility/perception wiring
+with NO density/threshold gate of any kind, not an adjustment to this
+threshold-combat system at all.
 
 **Targeting filter** (`PopulationCombatTargeting`): a population-combat
 target must be an opposing-faction NON-PERSISTENT filler. Excluded: same
@@ -315,9 +329,13 @@ engaged attacker persistent mid-chase stops it from dealing further damage.
 goal (`PanicGoal`, flee-on-hurt) and ZERO `targetSelector` goals, so a
 Fillager "never retaliates or acquires a combat target". MINECRAFT-390 adds
 ONE narrowly-scoped exception: `targetSelector.addGoal(1, new
-PopulationCombatTargetGoal(this, Faction.VILLAGER))`. Below the 500
-threshold, that goal's `canUse()` always returns `false` — a Fillager that
-never crosses it behaves EXACTLY as MINECRAFT-389 specified. A
+PopulationCombatTargetGoal(this, Faction.VILLAGER))`. Below the threshold,
+that goal's `canUse()` always returns `false` — a Fillager that never
+crosses it behaves EXACTLY as MINECRAFT-389 specified; since MINECRAFT-426
+corrected that threshold to 0 for this faction, the floor is never actually
+above zero for a Fillager any more (see the per-faction threshold section
+above), so in practice this goal's own `canUse()` is gated purely by target
+availability/attacker persistence from here on, not by density. A
 `MeleeAttackGoal` (`goalSelector` priority 2) is also added, since a
 `targetSelector` goal only sets `getTarget()` — nothing walks toward or
 swings at that target without an attack-execution goal reading it, and
@@ -422,6 +440,68 @@ egg, named, leashed, another mod) — only tagged instances are ever counted,
 spawned, despawned, or population-combat-eligible. No promotion economy and
 no custom hazard-death feedback for either faction (not requested; vanilla's
 own fire/lava/drowning damage already applies to any entity regardless).
+
+## Ordinary Skeleton hostility toward villagers/Fillagers (MINECRAFT-426)
+
+Independent of, and NOT to be confused with, the zero-density Fillager
+TERRITORIAL combat change above: every `Skeleton` instance (vanilla or
+population-filler-tagged, see the subclass audit below) now ALSO acquires
+and attacks ordinary villagers (including promoted ones) and Fillagers as
+ordinary vanilla-style hostility — **no density/threshold gate of any kind**
+and **no filler-faction-tag requirement of any kind**. This is the Skeleton
+side of the user request "Skeletons should be hostile to fillagers and
+villagers"; it has nothing to do with `PopulationCombatEligibility`'s
+per-faction density threshold documented above.
+
+Implemented the same way `FillagerTargetCompat` already mirrors real
+vanilla villager-attacker goals onto Fillager — join-time installation of a
+`NearestAttackableTargetGoal` (`SkeletonVillagerHostility`, idempotent via
+the same `WeakHashMap`-identity-set double-registration guard every other
+join-time installer in this mod uses) — except going the OTHER direction
+(Skeleton targeting villager/Fillager) and covering an entity type
+`FillagerTargetCompat`'s own inventory explicitly found NOT to be a vanilla
+villager attacker (`Skeleton` is listed among the confirmed non-attackers
+there). Priority 3, `mustSee = true`, matching vanilla `AbstractSkeleton`'s
+own Player/IronGolem target goals at that same priority slot.
+
+**Subclass/King audit** (explicit per ticket instruction): only the literal
+`net.minecraft.world.entity.monster.Skeleton` class matches the
+`instanceof Skeleton` check `SkeletonVillagerHostility` uses.
+`SkeletonKingEntity` extends `Skeleton` directly, so it DOES match and DOES
+receive this goal — deliberately not excluded, since nothing about this
+goal is gated by King-ness (unlike `FillerTargetingInstaller`'s King
+exclusion, which exists only because `PopulationCombatTargetGoal` is gated
+by filler-tag/density membership a King never has). `Stray`,
+`WitherSkeleton`, and `Bogged` all extend `AbstractSkeleton` directly, NOT
+`Skeleton` — they do not match and gain no new hostility, the same
+class-literal discipline `FillagerTargetCompat`/`FillerMarkers` already use
+for `Zombie` (where `ZombifiedPiglin` is excluded the same way).
+
+## Villager fear of Skeletons (MINECRAFT-426)
+
+Ordinary villagers (and promoted villagers, which are ordinary
+`net.minecraft.world.entity.npc.Villager` instances post-promotion) now
+perceive a nearby Skeleton as a threat and flee, exactly as they already do
+for a Zombie. This is the villager-perception half of the user request
+("Villagers should treat them the same as they treat zombies (afraid)").
+
+Vanilla wires ALL villager fear through one `Brain` memory,
+`MemoryModuleType.NEAREST_HOSTILE`: `VillagerHostilesSensor` populates it
+from a hardcoded `EntityType` → acceptable-distance map (Zombie at 8
+blocks), and the actual flee behavior (`VillagerPanicTrigger`/
+`VillagerCalmDown`) keys entirely off whether that memory has ANY value —
+never re-checking entity type. `VillagerSkeletonFear` extends that real
+path rather than adding a new unrelated predicate: every tick
+(`EntityTickEvent.Post`, guaranteed to run after that tick's own `Brain`
+sensor pass), it re-derives the nearest qualifying Skeleton from the SAME
+`NEAREST_VISIBLE_LIVING_ENTITIES` memory vanilla's own sensor reads, using
+the identical 8-block distance vanilla uses for Zombie, and writes it into
+`NEAREST_HOSTILE` only when it is at least as close as whatever is already
+there (never clobbering a real, closer vanilla hostile) — erasing only an
+entry it itself wrote, once that Skeleton no longer qualifies. This project
+has no Mixin framework, so there is no supported way to extend vanilla's
+own hardcoded sensor map directly; re-deriving the same memory value from
+the same underlying visible-entities data is the non-mixin equivalent.
 
 ## Independent light/sun-burn override at density > 250 (MINECRAFT-390)
 

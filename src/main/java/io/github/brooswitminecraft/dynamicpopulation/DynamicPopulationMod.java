@@ -45,6 +45,10 @@ public class DynamicPopulationMod {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.SunImmunityTicking.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.CombatDamageLogging.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.SpawnRateBudget.class);
+        // MINECRAFT-426: ordinary (non-population-gated) Skeleton hostility toward Fillagers/villagers, and
+        // real villager brain/sensor fear wiring against Skeletons.
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.SkeletonVillagerHostility.class);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.VillagerSkeletonFear.class);
         // MINECRAFT-417: debug population HUD. PopulationHudNetwork registers BOTH payload types/codecs
         // here (common/server-safe, including the server-to-client one -- required so a dedicated server
         // also joins the channel negotiation for it); only the actual server-to-client HANDLER LOGIC is

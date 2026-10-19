@@ -20,9 +20,10 @@ import net.minecraft.world.entity.ai.goal.target.TargetGoal;
  * <p>Continuous/reactive, no hysteresis: {@link #canUse} AND {@link #canContinueToUse} both re-read the
  * mob's OWN faction's CURRENT local density every time vanilla's goal selector evaluates them (every few
  * ticks, vanilla's own throttling) -- there is no cached "was active" flag. The moment the local density
- * drops back below {@link PopulationCombatEligibility#THRESHOLD_PPT}, {@code canContinueToUse} returns
- * false, vanilla's own {@code TargetGoal} machinery calls {@link #stop} (which clears the mob's target),
- * and the target is gone the same evaluation cycle -- no separate "clear stale targets" sweep is needed.
+ * drops back below {@link PopulationCombatEligibility#thresholdFor(Faction)} (500 for Zombie/Skeleton; 0,
+ * i.e. never, for Villager/Fillager as of MINECRAFT-426), {@code canContinueToUse} returns false, vanilla's
+ * own {@code TargetGoal} machinery calls {@link #stop} (which clears the mob's target), and the target is
+ * gone the same evaluation cycle -- no separate "clear stale targets" sweep is needed.
  *
  * <p><b>Goal-priority documentation (ticket scope item 6):</b> on {@link Fillager}, this goal is a
  * {@code targetSelector} goal; the pre-existing MINECRAFT-389 {@code PanicGoal} (flee-on-hurt) and the
@@ -82,7 +83,7 @@ public final class PopulationCombatTargetGoal extends TargetGoal {
         if (!(mob.level() instanceof ServerLevel level) || !PopulationSimulation.simulated(level)) {
             return false;
         }
-        if (!PopulationCombatEligibility.active(localDensity(level))) {
+        if (!PopulationCombatEligibility.active(ownFaction, localDensity(level))) {
             return false;
         }
         acquired = PopulationCombatTargeting.findNearestTarget(level, mob, ownFaction, RANGE_BLOCKS);
@@ -97,7 +98,7 @@ public final class PopulationCombatTargetGoal extends TargetGoal {
         if (!(mob.level() instanceof ServerLevel level) || !PopulationSimulation.simulated(level)) {
             return false;
         }
-        if (!PopulationCombatEligibility.active(localDensity(level))) {
+        if (!PopulationCombatEligibility.active(ownFaction, localDensity(level))) {
             return false;
         }
         return acquired != null && acquired.isAlive() && PopulationCombatTargeting.isEligibleOpponent(ownFaction, acquired);

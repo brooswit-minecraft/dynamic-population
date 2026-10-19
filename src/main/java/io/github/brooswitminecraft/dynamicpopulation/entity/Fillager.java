@@ -70,12 +70,16 @@ public final class Fillager extends PathfinderMob {
      * MINECRAFT-390 scope item 6: the ONE narrowly-scoped exception to MINECRAFT-389's "never retaliate or
      * acquire a combat target" rule -- a {@code targetSelector} goal ({@link PopulationCombatTargetGoal})
      * that can only ever acquire a target when THIS Fillager's own local Villager-faction density is at or
-     * above {@code PopulationCombatEligibility.THRESHOLD_PPT} (500 on the existing 0..1000 scale), and only
-     * against an opposing-faction NON-PERSISTENT filler (see {@code PopulationCombatTargeting}). Below that
-     * threshold the goal's own {@code canUse()} always returns false, so a Fillager that never crosses it
-     * behaves EXACTLY as MINECRAFT-389 specified: it still never retaliates or acquires a target. This is
-     * additive only -- it does not touch {@code FillagerTargetCompat} (other mobs targeting a Fillager) or
-     * loosen any check in {@link PanicGoal} itself.
+     * above {@code PopulationCombatEligibility.thresholdFor(Faction.VILLAGER)} -- corrected by MINECRAFT-426
+     * to 0 on the existing 0..1000 scale (i.e. eligible at ANY density, including exactly zero; this was
+     * originally 500 like every other faction, see {@code PopulationCombatEligibility}'s own class doc for
+     * the per-faction split), and only against an opposing-faction NON-PERSISTENT filler (see
+     * {@code PopulationCombatTargeting}). Below that threshold the goal's own {@code canUse()} always
+     * returns false, so a Fillager that never crosses it behaves EXACTLY as MINECRAFT-389 specified: it
+     * still never retaliates or acquires a target -- though since MINECRAFT-426 that floor is never actually
+     * above zero for this faction any more. This is additive only -- it does not touch
+     * {@code FillagerTargetCompat} (other mobs targeting a Fillager) or loosen any check in
+     * {@link PanicGoal} itself.
      *
      * <p>{@link MeleeAttackGoal} is the attack-EXECUTION half this goal needs but Fillager never had before
      * (a {@code targetSelector} goal only sets {@code getTarget()}; nothing walks toward or swings at that
