@@ -15,9 +15,10 @@ import net.minecraft.world.level.Level;
  * the ordinary Zombie FILLER's threshold-gated sun override (see {@code EnvironmentalOverride}, which only
  * applies above 250 local density): a King must NEVER die to environmental sun exposure, full stop, since
  * persistence ("does not naturally despawn... survive chunk unload/reload and server restart") is a hard
- * requirement of this ticket, and the King's OWN territory preference (plains, high sky light -- the same
- * {@code KingTerritory} rule reused unchanged for every faction) would otherwise put it directly in harm's
- * way the moment it settles. {@link #isSunBurnTick} is overridden to always return {@code false}; no other
+ * requirement of this ticket, and the King's OWN territory preference (high sky light, no biome restriction
+ * since MINECRAFT-413 -- the same {@code KingTerritory} rule reused unchanged for every faction) would
+ * otherwise put it directly in harm's way the moment it settles. {@link #isSunBurnTick} is overridden to
+ * always return {@code false}; no other
  * fire/lava immunity is granted (ordinary fire/lava damage from any other source still applies normally,
  * same scoping rule {@code EnvironmentalOverride}'s own doc states for the filler case).
  *
