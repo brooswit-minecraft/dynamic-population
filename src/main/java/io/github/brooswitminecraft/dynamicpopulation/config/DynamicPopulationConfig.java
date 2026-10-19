@@ -73,6 +73,8 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue KING_SEED_RADIUS_CELLS;
     private static final ModConfigSpec.IntValue KING_SEED_RATE_PPT;
     private static final ModConfigSpec.IntValue KING_SEED_INTERVAL_TICKS;
+    private static final ModConfigSpec.IntValue KING_NATURAL_FOUNDING_INTERVAL_TICKS;
+    private static final ModConfigSpec.IntValue KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR;
 
     private static final ModConfigSpec.IntValue SAMPLING_HORIZONTAL_RADIUS;
     private static final ModConfigSpec.IntValue SAMPLING_VERTICAL_RADIUS;
@@ -102,7 +104,8 @@ public final class DynamicPopulationConfig {
     public record Snapshot(int cellSize, int configVersion, double weightDown, double weightSides, double weightUp,
             double spreadFraction, int stepIntervalTicks, int traversableSampleSpacing,
             int kingUniquenessRadiusCells, int kingMinSkyLight, int kingMaxDepthBelowSurfaceBlocks,
-            int kingSeedRadiusCells, int kingSeedRatePpt, int kingSeedIntervalTicks, int samplingHorizontalRadius,
+            int kingSeedRadiusCells, int kingSeedRatePpt, int kingSeedIntervalTicks,
+            int kingNaturalFoundingIntervalTicks, int kingNaturalFoundingChanceDenominator, int samplingHorizontalRadius,
             int samplingVerticalRadius, int fillagersPerFullCell, int reconciliationRefillPerInterval,
             int spawnCapPerInterval, int despawnCapPerInterval, int reconciliationIntervalTicks,
             int unsafeDeathTargetDecrement, int promotionEmeraldCost, int villageTradeTargetIncrement,
@@ -201,6 +204,18 @@ public final class DynamicPopulationConfig {
                     + "own) -- there is no lifespan key because there is no numeric tunable to attach to that "
                     + "choice; see docs/villager-king.md.")
             .defineInRange("king_seed_interval_ticks", 20, 1, 1200);
+        KING_NATURAL_FOUNDING_INTERVAL_TICKS = BUILDER
+            .comment(
+                "Natural founding (MINECRAFT-414): server ticks between natural-founding boundaries. On each "
+                    + "boundary, every faction that currently has no live King entity in any loaded chunk gets "
+                    + "exactly one random trial (see king_natural_founding_chance_denominator) -- never one "
+                    + "trial per loaded chunk. 1..72000.")
+            .defineInRange("king_natural_founding_interval_ticks", 200, 1, 72000);
+        KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR = BUILDER
+            .comment(
+                "Natural founding (MINECRAFT-414): a winning trial is 1-in-this-many (default 10000, i.e. "
+                    + "1-in-10,000 per eligible boundary per faction). 1..1000000.")
+            .defineInRange("king_natural_founding_chance_denominator", 10000, 1, 1000000);
 
         SAMPLING_HORIZONTAL_RADIUS = BUILDER.comment("Fillager reconciliation: horizontal radius, in cells, sampled around a decision (0..16). A larger window makes the decision smoother and less local; it does NOT raise population density.").defineInRange("fillager_sampling_horizontal_radius", 5, 0, 16);
         SAMPLING_VERTICAL_RADIUS = BUILDER.comment("Fillager reconciliation: vertical radius, in cells, sampled around a decision (0..6). A larger window makes the decision smoother and less local; it does NOT raise population density.").defineInRange("fillager_sampling_vertical_radius", 2, 0, 6);
@@ -266,6 +281,7 @@ public final class DynamicPopulationConfig {
             SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get(),
             KING_UNIQUENESS_RADIUS_CELLS.get(), KING_MIN_SKY_LIGHT.get(), KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.get(),
             KING_SEED_RADIUS_CELLS.get(), KING_SEED_RATE_PPT.get(), KING_SEED_INTERVAL_TICKS.get(),
+            KING_NATURAL_FOUNDING_INTERVAL_TICKS.get(), KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR.get(),
             SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), UNSAFE_DEATH_TARGET_DECREMENT.get(), PROMOTION_EMERALD_COST.get(),
             VILLAGE_TRADE_TARGET_INCREMENT.get(), VILLAGE_BREEDING_TARGET_INCREMENT.get(), VILLAGE_BUILDING_TARGET_INCREMENT.get(),
             VILLAGE_FARMING_TARGET_INCREMENT.get(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.get(),
@@ -279,6 +295,7 @@ public final class DynamicPopulationConfig {
             KING_UNIQUENESS_RADIUS_CELLS.getDefault(), KING_MIN_SKY_LIGHT.getDefault(),
             KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.getDefault(), KING_SEED_RADIUS_CELLS.getDefault(),
             KING_SEED_RATE_PPT.getDefault(), KING_SEED_INTERVAL_TICKS.getDefault(),
+            KING_NATURAL_FOUNDING_INTERVAL_TICKS.getDefault(), KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR.getDefault(),
             SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), UNSAFE_DEATH_TARGET_DECREMENT.getDefault(), PROMOTION_EMERALD_COST.getDefault(),
             VILLAGE_TRADE_TARGET_INCREMENT.getDefault(), VILLAGE_BREEDING_TARGET_INCREMENT.getDefault(), VILLAGE_BUILDING_TARGET_INCREMENT.getDefault(),
             VILLAGE_FARMING_TARGET_INCREMENT.getDefault(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.getDefault(),

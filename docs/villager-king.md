@@ -51,13 +51,73 @@ with its chunk. There is no numeric lifespan tunable (see
 `king_seed_interval_ticks`'s config comment) because this story's fixed
 decisions leave lifespan unbounded; there is nothing to bound.
 
-This story does not auto-spawn Kings during world generation or via any
-natural trigger — not specified by this ticket's fixed decisions, for ANY
-faction. `/dpop king settle [faction]` is the only way to found one (mirrors
-`/dpop set` being the only way to seed population directly — see
-`docs/propagation.md`). **Natural King founding remains an explicit,
-unimplemented follow-up** — MINECRAFT-390 scope item 7 is explicit that this
-is out of scope; no spawn mechanism or rate was invented.
+This story (MINECRAFT-390) did not auto-spawn Kings during world generation
+or via any natural trigger — `/dpop king settle [faction]` was the only way
+to found one. **MINECRAFT-414 implements natural founding** (see "Natural
+King founding (MINECRAFT-414)" below); `/dpop king settle` remains, unchanged,
+as the command-driven path, still gated by the territory/uniqueness checks
+described above, which natural founding deliberately does not inherit.
+
+## Natural King founding (MINECRAFT-414)
+
+On each `king_natural_founding_interval_ticks`-tick boundary (default 200),
+independently for every faction, natural founding runs AT MOST one
+1-in-`king_natural_founding_chance_denominator` (default 10,000) random
+trial — never one trial per loaded chunk, so more loaded chunks never raise
+the odds — but only if no LIVE King entity of that faction currently exists
+in any loaded chunk of that `ServerLevel` (Overworld only, matching the
+existing simulated-dimension boundary). "Live" means an actual loaded
+entity, never the registry: a King of a DIFFERENT faction never blocks a
+trial, and neither does the SAME faction's King sitting in a currently
+UNLOADED chunk — that King can still legitimately return once its own chunk
+loads back in; this is loaded-only eligibility, not global uniqueness.
+
+A winning trial picks exactly one random currently-loaded chunk (tracked by
+this mod's own chunk load/unload bookkeeping — `ChunkMap#getChunks()` is
+`protected` in this NeoForge version, so there is no public API to read the
+loaded-chunk set directly off the chunk cache), then a random X/Z column
+within it, and derives a surface Y from that column's `MOTION_BLOCKING`
+heightmap. It attempts exactly once: the candidate must be within world
+build-height bounds, stand on a dry, face-sturdy support (this also rejects
+an ocean/lake surface and a waterlogged block, since a fluid column's
+heightmap top is the fluid's own surface, which is never dry), have a
+dry, collision-free body, and the faction's own local target density at that
+site must be genuinely READABLE (not an unloaded anchor or corrupt data
+masquerading as a zero) AND exactly zero. Any single failure skips this
+boundary's trial entirely — there is no retry with a different site, and no
+hidden biome/sky-light/surface-depth/registry-distance gate the way
+`/dpop king settle` has (natural founding never routes through
+`KingManager.suitableTerritory`/`wouldBeUnique`, by this ticket's explicit
+requirement; MINECRAFT-413 revises those same gates independently for the
+command path only).
+
+On success, natural founding reuses `KingManager.spawnKingEntity` (the exact
+same entity-construction path `settle` uses) and only commits a
+`KingRecord.Entry` after confirming the entity is actually present in the
+level — never an entity+record pair created speculatively. It then
+broadcasts a server-chat announcement naming only the King's kind, with NO
+location information at all (no coordinates, chunk, biome, direction, or
+distance, and nothing location-revealing hidden in the message either), e.g.
+"A Zombie King has spawned." — exactly once, only on this genuine success
+path, never on a losing trial, a rejected site, an insertion failure,
+ordinary reload, `KingEntitySync` migration, or any reconciliation path.
+
+### King death (MINECRAFT-414)
+
+A King's actual death — natural OR command-settled, any faction — broadcasts
+the matching location-free announcement, e.g. "A Skeleton King has died.",
+and retires that King's `KingRecord.Entry` so `KingEntitySync` can never
+resurrect it and registry-driven seeding stops reading from a dead source;
+the faction's population density field itself is untouched. This listens on
+`LivingDeathEvent` at `EventPriority.LOWEST` and bails out on
+`event.isCanceled()`, so a cancelled (e.g. totem-of-undying-prevented) death
+never announces. Dedupe and scope are both carried by one check — whether
+the dying entity's id is still present in the registry: an administrative
+`KingManager.removeNearest` discard already removes the record before
+discarding the entity, and a hypothetical second death callback for the same
+entity finds the id already removed by the first — so neither double-fires,
+and no explicit King-vs-King hostility/targeting exists (tracked separately,
+deliberately out of this story's scope).
 
 ## Persistence, migration, and no duplicates (MINECRAFT-390)
 
