@@ -6,11 +6,7 @@ import io.github.brooswitminecraft.dynamicpopulation.entity.SkeletonKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.VillagerKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.ZombieKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.Mob;
-import net.minecraft.world.phys.AABB;
 
 /**
  * MINECRAFT-416: the targeting filter for cross-type King-vs-King hostility ONLY. This is deliberately a
@@ -21,12 +17,16 @@ import net.minecraft.world.phys.AABB;
  * making a King eligible as an ordinary filler's population-combat target too, which this ticket explicitly
  * forbids ("Do not add same-type King hostility or broaden ordinary filler targeting to include Kings").
  *
- * <p>Unlike {@link PopulationCombatTargeting}, this predicate has no density/threshold gate at all (ticket:
- * "has no population-density prerequisite... Do not reuse the ordinary filler population-combat eligibility
- * gate") and no player/persistence exclusion -- the only two facts that matter are "is this a King" and
- * "which faction's King is it", since the only entities this predicate is ever consulted about are the three
- * King types themselves (installed only on {@code VillagerKingEntity}/{@code ZombieKingEntity}/
- * {@code SkeletonKingEntity} by {@link KingHostilityTargetGoal}).
+ * <p><b>Review fix (P1):</b> this class previously also implemented its own nearest-target search (a raw
+ * AABB scan plus a hand-rolled {@code isAlive()} check), which {@link KingHostilityTargetGoal} used to
+ * acquire AND continue a target with none of the normal combat conditions vanilla's own
+ * {@code TargetGoal}/{@code TargetingConditions} machinery provides -- no alliance/team exclusion, no
+ * visibility, and no bounded continuation once the target left {@code FOLLOW_RANGE}. That search method is
+ * now gone; {@link KingHostilityTargetGoal} instead uses vanilla's own
+ * {@code net.minecraft.world.entity.ai.targeting.TargetingConditions} (team/alliance exclusion, distance,
+ * line-of-sight, {@code canAttack}/{@code isAlive} all included) with this class's predicate plugged in as
+ * the narrow cross-type {@code selector} -- the same composition {@code NearestAttackableTargetGoal} itself
+ * uses. This class now only holds the pure, unit-tested faction predicate.
  */
 public final class KingHostilityTargeting {
     private KingHostilityTargeting() { }
@@ -50,27 +50,15 @@ public final class KingHostilityTargeting {
         return ownFaction != candidateFaction;
     }
 
-    /** The Minecraft-wiring half of {@link #isEligibleOpponent(Faction, Faction)}: derives the facts from a real entity. */
+    /**
+     * The Minecraft-wiring half of {@link #isEligibleOpponent(Faction, Faction)}, used as a
+     * {@code TargetingConditions} selector -- see {@link KingHostilityTargetGoal}. Everything else a
+     * population-combat-style target needs (alive, not spectator/invulnerable, not allied/same team,
+     * difficulty, distance, line-of-sight) is already enforced by {@code TargetingConditions}/
+     * {@code TargetGoal} itself; this predicate only needs to add "is this entity an opposing-faction King".
+     */
     public static boolean isEligibleOpponent(Faction ownFaction, Entity candidate) {
-        if (!(candidate instanceof LivingEntity living) || !living.isAlive()) {
-            return false;
-        }
         Optional<Faction> candidateFaction = kingFactionOf(candidate);
         return candidateFaction.isPresent() && isEligibleOpponent(ownFaction, candidateFaction.get());
-    }
-
-    /** Nearest eligible opposing-faction King within {@code range} blocks of {@code self}, or null. */
-    public static LivingEntity findNearestTarget(ServerLevel level, Mob self, Faction ownFaction, double range) {
-        AABB box = self.getBoundingBox().inflate(range);
-        LivingEntity nearest = null;
-        double nearestDistSq = Double.MAX_VALUE;
-        for (Entity candidate : level.getEntities(self, box, e -> isEligibleOpponent(ownFaction, e))) {
-            double distSq = self.distanceToSqr(candidate);
-            if (distSq < nearestDistSq) {
-                nearestDistSq = distSq;
-                nearest = (LivingEntity) candidate;
-            }
-        }
-        return nearest;
     }
 }
