@@ -36,6 +36,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
 public final class PopulationHudTracker {
     private static final Set<UUID> ENABLED = new HashSet<>();
     private static final Map<UUID, PopulationHudSnapshot> LAST_SENT = new HashMap<>();
+    private static final Set<UUID> NEEDS_RESEND = new HashSet<>();
 
     private PopulationHudTracker() { }
 
@@ -58,14 +59,32 @@ public final class PopulationHudTracker {
      * logout/login via {@link #onLoggedOut}) does enabling force that first sample, so the HUD doesn't
      * otherwise sit blank until the next polling boundary. See {@link #isGenuineOffToOnTransition} and
      * {@link #shouldForceImmediateSample}, the pure decisions this defers to.
+     *
+     * <p>MINECRAFT-417 round-3 review fix: {@link #LAST_SENT} surviving a disable is correct for RATE-LIMITING
+     * purposes (above), but it also doubles as the CONTENT the next {@link #sendIfChanged} call compares
+     * against to decide "did anything change". Those are two different questions. The client clears its own
+     * cached snapshot on every disable (correct since round 1 -- the HUD should visually go blank). So on a
+     * genuine re-enable where the underlying density genuinely hasn't moved since the disable, the old
+     * single-flag design saw "no content change" and stayed silent forever, even though the client has
+     * nothing cached any more and is waiting for a value it would recognize as new. A re-enable with prior
+     * {@link #LAST_SENT} history (so it does NOT qualify for the first-ever-enable immediate bypass above)
+     * instead marks {@link #NEEDS_RESEND}: a one-shot flag consumed by the very next interval-eligible
+     * {@link #sendIfChanged} call (normal polling cadence, or the independently-responsive dimension-change
+     * hook), which forces exactly one resend of the current value even if it compares equal to
+     * {@link #LAST_SENT}. This still respects {@code hud_update_interval_ticks} -- it does not bypass the
+     * tick-gated poll the way the first-ever-enable case does -- while guaranteeing the player is not left
+     * stuck with a blank HUD indefinitely just because nothing changed server-side.
      */
     public static void setEnabled(ServerPlayer player, boolean enabled) {
         UUID id = player.getUUID();
         boolean wasEnabled = ENABLED.contains(id);
         if (enabled) {
             ENABLED.add(id);
-            if (shouldForceImmediateSample(wasEnabled, true, LAST_SENT.containsKey(id))) {
+            boolean hasPriorLastSent = LAST_SENT.containsKey(id);
+            if (shouldForceImmediateSample(wasEnabled, true, hasPriorLastSent)) {
                 sendIfChanged(player);
+            } else if (shouldMarkNeedsResend(wasEnabled, true, hasPriorLastSent)) {
+                NEEDS_RESEND.add(id);
             }
         } else {
             ENABLED.remove(id);
@@ -92,6 +111,20 @@ public final class PopulationHudTracker {
      */
     static boolean shouldForceImmediateSample(boolean wasEnabled, boolean enabled, boolean hasPriorLastSent) {
         return isGenuineOffToOnTransition(wasEnabled, enabled) && !hasPriorLastSent;
+    }
+
+    /**
+     * Pure gating check, directly unit-testable: the MINECRAFT-417 round-3 complement of
+     * {@link #shouldForceImmediateSample}. A genuine OFF-&gt;ON transition that DOES have a prior
+     * {@link #LAST_SENT} entry (so it does NOT qualify for the immediate out-of-band bypass above) must
+     * instead mark {@link #NEEDS_RESEND}, so the client -- which cleared its own cache on the disable that
+     * preceded this re-enable -- is guaranteed exactly one fresh value on the next interval-eligible poll,
+     * even if the server's view of the content hasn't changed at all. A redundant ON-&gt;ON toggle, a
+     * disable, or a true first-ever enable must all return {@code false} here: the first two have nothing
+     * to catch up on, and the third is already handled by the immediate-sample path instead.
+     */
+    static boolean shouldMarkNeedsResend(boolean wasEnabled, boolean enabled, boolean hasPriorLastSent) {
+        return isGenuineOffToOnTransition(wasEnabled, enabled) && hasPriorLastSent;
     }
 
     @SubscribeEvent
@@ -122,6 +155,7 @@ public final class PopulationHudTracker {
         if (event.getEntity() instanceof ServerPlayer player) {
             ENABLED.remove(player.getUUID());
             LAST_SENT.remove(player.getUUID());
+            NEEDS_RESEND.remove(player.getUUID());
         }
     }
 
@@ -136,13 +170,21 @@ public final class PopulationHudTracker {
     }
 
     private static void sendIfChanged(ServerPlayer player) {
+        UUID id = player.getUUID();
         PopulationHudPayload payload = compute(player);
         PopulationHudSnapshot snapshot = PopulationHudSnapshot.from(payload);
-        PopulationHudSnapshot previous = LAST_SENT.get(player.getUUID());
-        if (snapshot.equals(previous)) {
+        PopulationHudSnapshot previous = LAST_SENT.get(id);
+        // MINECRAFT-417 round-3 review fix: a pending NEEDS_RESEND flag (set by setEnabled on a genuine
+        // re-enable with prior LAST_SENT history, see there) forces exactly one resend here even when the
+        // freshly computed snapshot compares equal to what was last sent -- the client's own cache was
+        // wiped by the disable, so "no content change" from the server's point of view must not be read as
+        // "nothing to do". Consuming the flag (remove, not just a contains check) makes this a one-shot: a
+        // single bounded catch-up send, not a standing bypass of the equality check on every later poll.
+        boolean forcedResend = NEEDS_RESEND.remove(id);
+        if (!forcedResend && snapshot.equals(previous)) {
             return;
         }
-        LAST_SENT.put(player.getUUID(), snapshot);
+        LAST_SENT.put(id, snapshot);
         PacketDistributor.sendToPlayer(player, payload);
     }
 

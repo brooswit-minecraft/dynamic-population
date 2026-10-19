@@ -123,4 +123,107 @@ class PopulationHudTrackerTest {
 
         assertEquals(1, forcedSends, "rapid off/on/off/on... spam must force at most one out-of-band sample");
     }
+
+    /**
+     * MINECRAFT-417 round-3 review fix: {@link PopulationHudTracker#shouldMarkNeedsResend} is the pure
+     * complement of {@link PopulationHudTracker#shouldForceImmediateSample} -- a genuine off-&gt;on
+     * transition with prior {@code LAST_SENT} history must mark a resend (so the client isn't stuck with a
+     * blank HUD after the server's "nothing changed" comparison stays silent), while every other transition
+     * (redundant on-&gt;on, any disable, or a true first-ever enable already covered by the immediate-sample
+     * path) must not.
+     */
+    @Test
+    void reEnablingAfterAPriorLastSentMarksNeedsResend() {
+        assertTrue(PopulationHudTracker.shouldMarkNeedsResend(false, true, true));
+    }
+
+    @Test
+    void firstEverEnableDoesNotMarkNeedsResend() {
+        // Already handled by the immediate-sample bypass instead -- marking a resend on top would be
+        // redundant, not wrong, but the pure gate should still clearly exclude this case.
+        assertFalse(PopulationHudTracker.shouldMarkNeedsResend(false, true, false));
+    }
+
+    @Test
+    void redundantOnToOnNeverMarksNeedsResendRegardlessOfLastSent() {
+        assertFalse(PopulationHudTracker.shouldMarkNeedsResend(true, true, false));
+        assertFalse(PopulationHudTracker.shouldMarkNeedsResend(true, true, true));
+    }
+
+    @Test
+    void disablingNeverMarksNeedsResendRegardlessOfLastSent() {
+        assertFalse(PopulationHudTracker.shouldMarkNeedsResend(true, false, false));
+        assertFalse(PopulationHudTracker.shouldMarkNeedsResend(true, false, true));
+        assertFalse(PopulationHudTracker.shouldMarkNeedsResend(false, false, false));
+        assertFalse(PopulationHudTracker.shouldMarkNeedsResend(false, false, true));
+    }
+
+    /**
+     * MINECRAFT-417 round-3 review fix: the exact full lifecycle the regression was found in --
+     * enable -&gt; receive a value -&gt; disable (client clears its cache) -&gt; re-enable -&gt; some unchanged
+     * scheduled polls go by -&gt; a resend must still eventually reach the player, and it must do so without
+     * re-introducing round 2's "immediate send on every toggle" bug.
+     *
+     * <p>This is a pure simulation of the same state machine {@link PopulationHudTracker#setEnabled} and
+     * {@link PopulationHudTracker#sendIfChanged} drive (no real {@code ServerPlayer}/{@code PacketDistributor}
+     * -- those need a running game and are covered by the server-boot smoke test per this repo's existing
+     * convention, see the class javadoc above), tracking the same three pieces of state: whether a
+     * {@code LAST_SENT} entry exists, whether a {@code NEEDS_RESEND} flag is pending, and how many sends
+     * happen in total. "Content changed" is modeled directly as a boolean per poll, exactly like the content
+     * equality check {@code sendIfChanged} performs against {@code LAST_SENT}.
+     */
+    @Test
+    void genuineReEnableEventuallyResendsEvenWithNoUnderlyingChange() {
+        boolean wasEnabled = false;
+        boolean hasPriorLastSent = false;
+        boolean needsResendPending = false;
+        int totalSends = 0;
+
+        // 1. Enable (first ever) -> forces an immediate out-of-band sample.
+        boolean enabled = true;
+        if (PopulationHudTracker.shouldForceImmediateSample(wasEnabled, enabled, hasPriorLastSent)) {
+            totalSends++;
+            hasPriorLastSent = true;
+        }
+        wasEnabled = enabled;
+        assertEquals(1, totalSends, "first-ever enable must force exactly one immediate sample");
+
+        // 2. Disable -> LAST_SENT memory survives (per round-2 fix); no send is triggered by disabling.
+        enabled = false;
+        wasEnabled = enabled; // setEnabled only removes from ENABLED; LAST_SENT/hasPriorLastSent is untouched.
+        assertEquals(1, totalSends, "disabling must never trigger a send");
+
+        // 3. Re-enable (genuine off->on, with prior LAST_SENT history) -> must NOT force an immediate
+        //    sample (that would reintroduce round 2's alternating-toggle bug), but MUST mark a pending
+        //    resend so the next eligible poll catches the client up.
+        enabled = true;
+        boolean forcedImmediate = PopulationHudTracker.shouldForceImmediateSample(wasEnabled, enabled, hasPriorLastSent);
+        assertFalse(forcedImmediate, "re-enable with prior history must not bypass the interval (round-2 regression)");
+        if (PopulationHudTracker.shouldMarkNeedsResend(wasEnabled, enabled, hasPriorLastSent)) {
+            needsResendPending = true;
+        }
+        wasEnabled = enabled;
+        assertEquals(1, totalSends, "re-enabling itself must not have sent anything yet");
+        assertTrue(needsResendPending, "a genuine re-enable with prior history must queue a pending resend");
+
+        // 4. Several scheduled polls go by with NO underlying content change. Model each poll the way
+        //    sendIfChanged does: a pending resend forces a send even though content-equality alone would
+        //    have stayed silent; the flag is consumed (one-shot) on the poll that uses it.
+        boolean[] contentChangedPerPoll = {false, false, false};
+        int pollsThatSent = 0;
+        for (boolean contentChanged : contentChangedPerPoll) {
+            boolean forcedResend = needsResendPending;
+            needsResendPending = false; // consumed, same as NEEDS_RESEND.remove(id) in sendIfChanged.
+            if (forcedResend || contentChanged) {
+                totalSends++;
+                pollsThatSent++;
+            }
+        }
+
+        assertEquals(1, pollsThatSent,
+            "exactly one of the unchanged scheduled polls must resend -- the one that consumes the pending flag");
+        assertEquals(2, totalSends,
+            "bounded total: one immediate first-ever sample, one catch-up resend on re-enable -- never more");
+        assertFalse(needsResendPending, "the resend flag must be consumed, not left pending indefinitely");
+    }
 }
