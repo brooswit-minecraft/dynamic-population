@@ -29,8 +29,6 @@ import net.minecraft.world.level.Level;
  * attackers are still made to target this entity despite that, without any shared supertype.
  */
 public final class Fillager extends PathfinderMob {
-    private boolean unsafeLocationDeath;
-
     /**
      * Hurt-triggered flee (MINECRAFT-389, AC2): the EXACT vanilla {@link PanicGoal} sheep/cow/pig already
      * use, unmodified -- no custom flee state machine, since vanilla's own is already a well-tested,
@@ -98,15 +96,7 @@ public final class Fillager extends PathfinderMob {
             return;
         }
         BlockPos pos = blockPosition();
-        // Overwritten every tick, never OR-latched: a wither rose only stings on contact, then lets its
-        // damage-over-time effect finish the kill ~2s later, so this flag must track CURRENT presence, not
-        // "was ever on a hazard" -- otherwise a Fillager that survives stepping off the rose would carry a
-        // stale true into a later, unrelated death (e.g. a player or mob kill) and misattribute it as AC9.
-        // Lava/fire/soul-fire are the opposite case (instant kill, same tick), so overwriting changes nothing
-        // for them.
-        boolean lethal = isLethalHazard(pos);
-        unsafeLocationDeath = lethal || isOnWitherRose(pos);
-        if (lethal) {
+        if (isLethalHazard(pos)) {
             hurt(damageSources().generic(), Float.MAX_VALUE);
         }
     }
@@ -115,10 +105,6 @@ public final class Fillager extends PathfinderMob {
         var state = level().getBlockState(pos);
         return state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA) || state.is(net.minecraft.world.level.block.Blocks.FIRE)
             || state.is(net.minecraft.world.level.block.Blocks.SOUL_FIRE);
-    }
-
-    private boolean isOnWitherRose(BlockPos pos) {
-        return level().getBlockState(pos).is(net.minecraft.world.level.block.Blocks.WITHER_ROSE);
     }
 
     /**
@@ -168,15 +154,5 @@ public final class Fillager extends PathfinderMob {
         if (villager != null) {
             villager.finalizeSpawn(level, level.getCurrentDifficultyAt(villager.blockPosition()), MobSpawnType.CONVERSION, null);
         }
-    }
-
-    /**
-     * Whether this Fillager is (as of this tick) standing on an unsafe location, for AC9. Deliberately
-     * location-based rather than damage-type-based for wither rose: {@code DamageTypes.WITHER} is also the
-     * damage dealt by the Wither status effect from a wither skeleton or the Wither boss, which must NOT
-     * count as a local-cell hazard death.
-     */
-    public boolean wasUnsafeLocationDeath() {
-        return unsafeLocationDeath;
     }
 }

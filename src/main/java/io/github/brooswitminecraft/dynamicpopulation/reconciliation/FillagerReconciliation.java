@@ -68,26 +68,6 @@ public final class FillagerReconciliation {
         return new Decision(target, desired, spawn, despawn);
     }
 
-    /** The death feedback is deliberately a local scalar operation, never a sampled-window operation. */
-    public static int unsafeDeathTargetAfter(int localTarget, int decrement) {
-        return targetAfterAdjustment(localTarget, -decrement);
-    }
-
-    /**
-     * The full event-to-storage wiring for AC9, as a pure function: given whether a death was classified
-     * unsafe, read-then-write exactly the one local cell, never a neighbour. {@code unsafe == false} (an
-     * ordinary despawn, promotion, or any non-hazard death) must leave storage completely untouched -- no
-     * read, no write -- not just an unchanged value, since this is also what the event handler calls for
-     * every Fillager death, unsafe or not.
-     */
-    public static void applyUnsafeDeathIfUnsafe(boolean unsafe, CellKey localCell, ToIntFunction<CellKey> read,
-            BiConsumer<CellKey, Integer> write, int decrement) {
-        if (!unsafe) {
-            return;
-        }
-        adjustLocalTarget(localCell, -decrement, read, write);
-    }
-
     /**
      * AC6 (MINECRAFT-30, village activity feedback): a local target adjustment, clamped to the field's own
      * {@code 0..CAPACITY} range the same way {@code LevelField.set} clamps it, so a test driven purely
@@ -100,9 +80,9 @@ public final class FillagerReconciliation {
     }
 
     /**
-     * The shared event-to-storage wiring behind every AC6 village-activity hook: read-then-write exactly the
-     * one local cell, never a neighbour -- the same locality {@link #applyUnsafeDeathIfUnsafe} already
-     * enforces for AC9.
+     * The shared event-to-storage wiring behind every AC6 village-activity hook, and (MINECRAFT-425) behind
+     * {@code PopulationDeathDecrement#apply} too: read-then-write exactly the one local cell, never a
+     * neighbour.
      */
     public static void adjustLocalTarget(CellKey localCell, int delta, ToIntFunction<CellKey> read,
             BiConsumer<CellKey, Integer> write) {

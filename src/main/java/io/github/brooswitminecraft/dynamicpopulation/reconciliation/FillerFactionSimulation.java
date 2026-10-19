@@ -25,6 +25,7 @@ import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 /**
@@ -65,6 +66,28 @@ public final class FillerFactionSimulation {
                 for (Spec spec : SPECS) {
                     reconcile(level, spec, config);
                 }
+            }
+        }
+    }
+
+    /**
+     * MINECRAFT-425: capture a tagged, non-persistence-required filler's actual death-position cell now --
+     * before any death-animation movement -- for {@code PopulationDeathDecrement} to apply (once, only if
+     * this death is never cancelled) via its own {@code EntityLeaveLevelEvent} listener. Reuses
+     * {@link #isFiller} for eligibility, so a King (never tagged) or a filler that has since become
+     * persistent (named/leashed) is excluded exactly the same way reconciliation itself already excludes
+     * them. Never touches storage directly: see {@code PopulationDeathDecrement}'s own class doc.
+     */
+    @SubscribeEvent
+    public static void onLivingDeath(LivingDeathEvent event) {
+        if (!(event.getEntity() instanceof Mob mob) || !(mob.level() instanceof ServerLevel level)) {
+            return;
+        }
+        for (Spec spec : SPECS) {
+            if (isFiller(mob, spec)) {
+                LevelField field = PopulationSimulation.field(level, spec.faction());
+                PopulationDeathDecrement.capture(mob.getUUID(), spec.faction(), field.cellAt(mob.blockPosition()));
+                return;
             }
         }
     }

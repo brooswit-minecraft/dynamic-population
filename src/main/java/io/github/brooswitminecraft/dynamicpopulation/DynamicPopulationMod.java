@@ -41,6 +41,8 @@ public class DynamicPopulationMod {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.FillagerTargetCompat.class);
         // MINECRAFT-390: faction Kings, threshold combat, Zombie/Skeleton fillers.
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillerFactionSimulation.class);
+        // MINECRAFT-425: flat -25-at-death-cell decrement, shared by every population-owned entity type.
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.reconciliation.PopulationDeathDecrement.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.FillerTargetingInstaller.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.SunImmunityTicking.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.CombatDamageLogging.class);

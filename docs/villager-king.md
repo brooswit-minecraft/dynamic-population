@@ -108,8 +108,12 @@ ordinary reload, `KingEntitySync` migration, or any reconciliation path.
 A King's actual death — natural OR command-settled, any faction — broadcasts
 the matching location-free announcement, e.g. "A Skeleton King has died.",
 and retires that King's `KingRecord.Entry` so `KingEntitySync` can never
-resurrect it and registry-driven seeding stops reading from a dead source;
-the faction's population density field itself is untouched. This listens on
+resurrect it and registry-driven seeding stops reading from a dead source.
+This retirement/announcement path itself is unchanged by MINECRAFT-425
+(added below), which separately subtracts a flat
+`population_death_target_decrement` (default 25) from the King's own
+faction field at its death cell -- the same single-decrement-per-death
+treatment every population-owned entity now gets. This listens on
 `EntityLeaveLevelEvent` (not the earlier, cancellable `LivingDeathEvent` --
 see `KingDeathHandling`'s own javadoc for the P1 review fix and why) and
 only treats it as a genuine death when `entity.getRemovalReason() == KILLED`,
@@ -419,9 +423,44 @@ each faction's own independent cell field. A scoreboard tag
 the ENTIRE distinguishing mark between "a filler this mod spawned and
 manages" and any other Zombie/Skeleton in the world (natural spawn, spawn
 egg, named, leashed, another mod) — only tagged instances are ever counted,
-spawned, despawned, or population-combat-eligible. No promotion economy and
-no custom hazard-death feedback for either faction (not requested; vanilla's
-own fire/lava/drowning damage already applies to any entity regardless).
+spawned, despawned, or population-combat-eligible. No promotion economy for
+either faction. MINECRAFT-425 added the one per-death feedback these fillers
+do get: an actual, confirmed death of a currently-tagged, non-persistent
+instance subtracts a flat `population_death_target_decrement` (default 25)
+from that faction's own field at the death cell, once -- see "Population
+death decrement" below. No separate hazard-vs-other classification exists
+for these two factions (never did): vanilla's own fire/lava/drowning damage
+already applies to any entity regardless, and every actual death is now
+treated identically regardless of cause.
+
+## Population death decrement (MINECRAFT-425)
+
+Every population-owned entity -- a Fillager, a tagged Zombie/Skeleton
+filler, or any of the three Kings -- subtracts a single flat
+`population_death_target_decrement` (default 25, on the same 0..1000 scale,
+floored at zero) from its OWN faction's field at its ACTUAL death-position
+cell (not its spawn cell), exactly once per actual death, regardless of
+cause. This replaced Fillager's former two-value hazard/other-cause split
+(`fillager_unsafe_death_target_decrement` / `fillager_other_death_target_decrement`,
+MINECRAFT-30's AC9/AC6) -- a distinction without a difference once every
+death applies the same amount -- and is the first per-death decrement either
+filler faction or any King has ever had.
+
+Implementation (`reconciliation.PopulationDeathDecrement`, used by all five
+entity-specific `LivingDeathEvent` listeners): the OWN entity's
+`LivingDeathEvent` -- cancellable, and not proof of an irreversible death,
+exactly the reasoning "King death" above already documents -- is the only
+correct place to read the actual death-cell position, since it fires before
+any death-animation movement; that handler only ever remembers an in-memory
+(faction, cell) pending tuple keyed by the entity's UUID, never storage.
+`PopulationDeathDecrement`'s own `EntityLeaveLevelEvent` listener is what
+actually applies it, gated on the same confirmed-`KILLED`-removal signal
+"King death" uses, so: a cancelled death never reaches that removal (the
+pending entry is simply superseded by a later capture, or left unapplied);
+ordinary reconciliation discard/despawn and promotion/conversion use
+`discard()` and never fire `LivingDeathEvent` at all; and a confirmed death
+consumes (removes) its pending entry, so a hypothetical repeated callback
+for the same death can never apply it twice.
 
 ## Independent light/sun-burn override at density > 250 (MINECRAFT-390)
 
