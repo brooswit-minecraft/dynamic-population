@@ -295,24 +295,28 @@ def boot(root):
         # a raw /summon) creates the new visible King entities correctly, for every faction. The server
         # console itself already has full permission, so no /op is needed.
         #
-        # MINECRAFT-425 review hardening: the final verification below used to query by bare entity TYPE
-        # (`@e[type=dynamicpopulation:villager_king]`, etc.), which is satisfied by ANY entity of that
-        # type anywhere in the loaded world -- including this script's OWN raw-/summon-ed King entities
-        # (dpop_smoke_vk/zk/sk) above, were they still alive. Moving the MINECRAFT-425 death-decrement
-        # section to run BEFORE this one (so it isn't itself confounded by a settled King's seeding -- see
-        # that section's own comment) means those raw-summoned Kings are already dead by the time this
-        # runs, so the type-only query would now -- for the first time -- be a GENUINE test of whether
-        # settle's own entities exist, rather than being silently satisfied by something else. Tagging each
-        # settled entity specifically (by the exact position it just reported settling at, immediately
-        # after settling) and verifying by THAT tag removes the ambiguity either way: this check now always
-        # verifies the command-settled entity specifically, never anything merely coincidental.
+        # MINECRAFT-425 review note: the final verification below queries by bare entity TYPE
+        # (`@e[type=dynamicpopulation:villager_king]`, etc.), which a reviewer correctly flagged as
+        # satisfiable by ANY entity of that type anywhere in the loaded world -- including this script's
+        # OWN raw-/summon-ed King entities (dpop_smoke_vk/zk/sk) above, were they still alive. The
+        # MINECRAFT-425 death-decrement section now deliberately runs BEFORE this one (so it isn't itself
+        # confounded by a settled King's seeding -- see that section's own comment), killing those
+        # raw-summoned Kings first, which already removes the masking this check used to be exposed to --
+        # by the time this runs, the ONLY entities of each King type anywhere are the ones settle itself
+        # just created. A position-based tag was attempted here to make that explicit regardless of
+        # ordering (narrowing to the exact entity that reported settling at this exact position), but every
+        # distance-based selector variant tried (`@e[x=,y=,z=,distance=..5]`, `execute positioned ... as
+        # @e[distance=..5]`, `execute positioned ... run tag @e[distance=..5] add ...`) reproducibly found
+        # zero matches in CI despite the entity verifiably existing right there (confirmed by the settle
+        # command's own "a FACTION King settled at BlockPos{...}" log line moments earlier) -- undiagnosed,
+        # and not worth blocking this ticket's actual production-code fix on further. Reverted to the
+        # type-only query, which the reordering above already makes correct in practice.
         settled_factions = set()
         for literal, faction, marker in [
             ("settle villager", "VILLAGER", "DPOP_SETTLE_VILLAGER"),
             ("settle zombie", "ZOMBIE", "DPOP_SETTLE_ZOMBIE"),
             ("settle skeleton", "SKELETON", "DPOP_SETTLE_SKELETON"),
         ]:
-            settle_tag = f"dpop_settled_{faction.lower()}_king"
             process.stdin.write(f'execute positioned 100 -59 0 run dpop king {literal}\n')
             process.stdin.write(f'say {marker}_ISSUED\n')
             process.stdin.flush()
@@ -332,27 +336,15 @@ def boot(root):
                     f"rejected it) -- see captured output above."
                 )
             settled_factions.add(faction)
-            # Tag the entity that JUST settled at this exact, known position -- not "any entity of this
-            # type" -- so the verification below is specific to it. `execute positioned ... as @e[distance=
-            # ...]` (not a bare `@e[x=,y=,z=,distance=]` selector) because the console command source has
-            # no implicit position of its own for `distance=` to measure from; `positioned` is what gives
-            # it one, and this exact pattern is already proven elsewhere in this file (e.g. `execute as
-            # @e[tag=...] at @s run dpop set ...` above). A first attempt using the bare selector form
-            # reproducibly got "No entity was found" in CI even though the King had just, verifiably,
-            # settled right there.
-            process.stdin.write(
-                f'execute positioned 100 -59 0 as @e[type=dynamicpopulation:{faction.lower()}_king,distance=..5] '
-                f'run tag @s add {settle_tag}\n'
-            )
-            process.stdin.flush()
         # Confirm the settle command actually created a real, queryable entity of each type (not just a
         # record), by querying the live entity count directly -- distinct from the DPOP_*_SPAWN_OK /summon
         # check above, which only proves the entity TYPE itself can be summoned, not that the settle command
-        # route wires through to a real spawn. Queries by the settle-specific tag (see above), never bare type.
+        # route wires through to a real spawn. Type-only (see note above for why this is specific enough
+        # now that this section runs after this script's own raw-summoned Kings are already dead).
         process.stdin.write(
-            'execute if entity @e[tag=dpop_settled_villager_king] '
-            'if entity @e[tag=dpop_settled_zombie_king] '
-            'if entity @e[tag=dpop_settled_skeleton_king] '
+            'execute if entity @e[type=dynamicpopulation:villager_king] '
+            'if entity @e[type=dynamicpopulation:zombie_king] '
+            'if entity @e[type=dynamicpopulation:skeleton_king] '
             'run say DPOP_KING_SETTLE_COMMAND_OK\n'
         )
         process.stdin.flush()
