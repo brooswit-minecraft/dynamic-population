@@ -1,5 +1,7 @@
 package io.github.brooswitminecraft.dynamicpopulation.entity;
 
+import io.github.brooswitminecraft.dynamicpopulation.combat.KingHostilityTargetGoal;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.monster.Skeleton;
 import net.minecraft.world.level.Level;
@@ -31,5 +33,16 @@ public final class SkeletonKingEntity extends Skeleton {
     @Override
     protected boolean isSunBurnTick() {
         return false;
+    }
+
+    /**
+     * MINECRAFT-416: see {@code ZombieKingEntity#registerGoals}'s identical-shape override for the full
+     * rationale -- unmodified vanilla Skeleton AI (ranged bow attack, player targeting, etc.) plus
+     * {@link KingHostilityTargetGoal} at targetSelector priority 0 for cross-type King hostility.
+     */
+    @Override
+    protected void registerGoals() {
+        super.registerGoals();
+        this.targetSelector.addGoal(0, new KingHostilityTargetGoal(this, Faction.SKELETON));
     }
 }

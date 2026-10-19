@@ -59,7 +59,12 @@ public final class DynamicPopulationEntities {
         event.put(VILLAGER_KING.get(), Mob.createMobAttributes()
             .add(Attributes.MAX_HEALTH, 60.0D)
             .add(Attributes.MOVEMENT_SPEED, 0.35D)
-            .add(Attributes.SCALE, KING_VISUAL_SCALE)
+            // MINECRAFT-416: a real ATTACK_DAMAGE attribute -- this King now carries a MeleeAttackGoal (see
+            // VillagerKingEntity#registerGoals), so Mob.createMobAttributes()'s near-zero default would make
+            // that goal functionally toothless, same reasoning FILLAGER's own ATTACK_DAMAGE addition above
+            // documents. 6.0 is between Fillager's unarmed-equivalent 2.0 and ZombieKingEntity's 7.0; no
+            // specific number was mandated by the ticket.
+            .add(Attributes.ATTACK_DAMAGE, 6.0D)
             .add(Attributes.FOLLOW_RANGE, 16.0D).build());
         event.put(ZOMBIE_KING.get(), Zombie.createAttributes()
             .add(Attributes.MAX_HEALTH, 100.0D)
