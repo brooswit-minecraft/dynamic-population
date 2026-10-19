@@ -221,6 +221,28 @@ def boot(root):
         # baseline also still cleanly distinguishes the Fillager/filler's smaller
         # population_death_target_decrement (default 25) landing at 975 from either a no-op (1000) or a
         # wrong-amount decrement.
+        def wait_for(check, timeout, timeout_message):
+            """Polls the shared output queue, returning check(line)'s first non-None result -- unlike
+            drain_for, this returns the INSTANT a match is found rather than blocking for the full timeout,
+            which matters here: propagation (a separate, continuously-running system, same real cause
+            documented at length in refresh_density's own doc below) steps this cell every
+            propagation_step_interval_ticks (default 20 ticks, ~1s) REGARDLESS of whether a command was
+            sent, so an unnecessary extra second or two of blocking between two command round-trips lets
+            this test's own baseline decay before it is even confirmed -- exactly what the first version of
+            this check got wrong (CI run 39262037957 observed 1000 ppt decay to 821 ppt purely from this
+            kind of avoidable delay, with no kill involved yet)."""
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+                except queue.Empty:
+                    return None
+                if line is None:
+                    raise RuntimeError(f"Server exited while {timeout_message}")
+                result = check(line)
+                if result is not None:
+                    return result
+
         def read_entity_position(tag):
             # The raw server log line has its OWN leading brackets (timestamp, thread, logger name) before
             # "... has the following entity data: [0.5d, -60.0d, 0.5d]" -- a naive first-'['-to-first-']'
@@ -229,56 +251,73 @@ def boot(root):
             pattern = re.compile(r'entity data:\s*\[(.*?)\]')
             process.stdin.write(f'data get entity @e[tag={tag},limit=1] Pos\n')
             process.stdin.flush()
-            for line in drain_for(2):
+
+            def check(line):
                 match = pattern.search(line)
                 if not match:
-                    continue
+                    return None
                 try:
                     return [float(part.strip().rstrip('d')) for part in match.group(1).split(',')]
                 except ValueError:
-                    continue
-            return None
+                    return None
 
-        def density_at(pos, faction_label, expect_ppt):
+            return wait_for(check, 2, f"reading {tag}'s position")
+
+        def read_density(pos, faction_label):
             # The /dpop command literal is lowercase ("villager"/"zombie"/"skeleton"), but its own output
             # echoes the Java Faction enum's name() verbatim, which is uppercase ("[VILLAGER] cell ...").
             x, y, z = pos
             process.stdin.write(f'execute positioned {x} {y} {z} run dpop show {faction_label.lower()}\n')
             process.stdin.flush()
-            for line in drain_for(2):
-                if f"[{faction_label}] cell" in line and f"= {expect_ppt} ppt" in line:
-                    return True
-            return False
+            prefix = f"[{faction_label}] cell"
+            pattern = re.compile(re.escape(prefix) + r".*?=\s*(\d+)\s*ppt")
+
+            def check(line):
+                if prefix not in line:
+                    return None
+                match = pattern.search(line)
+                return int(match.group(1)) if match else None
+
+            return wait_for(check, 2, f"reading {faction_label} density")
 
         death_decrement_checks = [
-            ("dpop_smoke", "VILLAGER", "the Fillager", 975),
-            ("dpop_smoke_vk", "VILLAGER", "the Villager King", 500),
-            ("dpop_smoke_zk", "ZOMBIE", "the Zombie King", 500),
-            ("dpop_smoke_sk", "SKELETON", "the Skeleton King", 500),
+            ("dpop_smoke", "VILLAGER", "the Fillager", 25, 975),
+            ("dpop_smoke_vk", "VILLAGER", "the Villager King", 500, 500),
+            ("dpop_smoke_zk", "ZOMBIE", "the Zombie King", 500, 500),
+            ("dpop_smoke_sk", "SKELETON", "the Skeleton King", 500, 500),
         ]
-        for tag, faction_label, description, expect_after_death in death_decrement_checks:
+        # EXACT equality, not a tolerance: propagation_step_interval_ticks is pinned to its configured
+        # maximum (1200 ticks, 60s) for this whole throwaway server via the config file seeded before
+        # first boot above -- propagation structurally cannot fire during this short section, so there is
+        # no decay left to tolerate. A review round found the earlier version of this check flaky for
+        # exactly that reason (CI run 39262037957); this fixes the actual cause instead of loosening the
+        # assertion.
+        for tag, faction_label, description, expect_decrement, expect_after in death_decrement_checks:
             process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set {faction_label.lower()} 1000\n')
             process.stdin.flush()
             pos = read_entity_position(tag)
             if pos is None:
                 raise RuntimeError(f"MINECRAFT-425 death-decrement check: could not read {description}'s position")
-            if not density_at(pos, faction_label, 1000):
+            baseline = read_density(pos, faction_label)
+            if baseline != 1000:
                 raise RuntimeError(
                     f"MINECRAFT-425 death-decrement check: baseline 1000 ppt not confirmed at {description}'s "
-                    f"own cell before killing it -- see captured output above."
+                    f"own cell before killing it (read {baseline}) -- see captured output above."
                 )
             process.stdin.write(f'kill @e[tag={tag}]\n')
             process.stdin.flush()
             # Confirmed-KILLED removal fires via LivingEntity#tickDeath ~20 ticks (~1s) after an uncancelled
             # LivingDeathEvent, never before (see king.KingDeathHandling's own doc) -- wait past that with
             # margin before reading the field back.
-            drain_for(3)
-            if not density_at(pos, faction_label, expect_after_death):
+            time.sleep(1.2)
+            after = read_density(pos, faction_label)
+            if after != expect_after:
                 raise RuntimeError(
-                    f"MINECRAFT-425 death-decrement check FAILED: {description}'s own death did not "
-                    f"decrement {faction_label} to exactly {expect_after_death} ppt at its own death cell -- "
-                    f"this would indicate another onLivingDeath listener's pending capture/consume silently "
-                    f"ate (or never recorded) this one, or applied the wrong amount, see "
+                    f"MINECRAFT-425 death-decrement check FAILED: {description}'s own death left "
+                    f"{faction_label} at {after} ppt ({baseline} -> {after}), not exactly the expected "
+                    f"{expect_after} ppt (a {expect_decrement} ppt decrement) at its own death cell -- this "
+                    f"would indicate another onLivingDeath listener's pending capture/consume silently ate "
+                    f"(or never recorded) this one, or applied the wrong amount, see "
                     f"PopulationDeathDecrement's own class doc."
                 )
         print(
@@ -774,6 +813,24 @@ if __name__ == "__main__":
         )
         (root / "mods").mkdir(exist_ok=True)
         shutil.copy2(jar, root / "mods" / jar.name)
+        # MINECRAFT-425 (reviewer-requested determinism, review finding on job 118091910661/run
+        # 39262037957): propagation is a SEPARATE, continuously-running system that steps every active
+        # cell (any cell /dpop set ever touched) every propagation_step_interval_ticks (default 20 ticks,
+        # ~1s) -- which overlaps, unpredictably and with its own internal RNG (Propagation.step takes a
+        # a random.Random), with the ~1s this test must itself wait for a kill's confirmed-KILLED removal.
+        # Pre-seeding this config file BEFORE first boot (read at normal ModConfigEvent.Loading, the
+        # always-exercised path -- NOT the live file-watcher reload DynamicPopulationConfig's own doc
+        # flags as "NOT OBSERVED" in a running server) pins the interval to the config's own maximum
+        # (1200 ticks, 60s) for this throwaway server's whole run -- far longer than this script's own
+        # multi-second checks -- so propagation structurally cannot fire during them at all. This makes
+        # the MINECRAFT-425 death-decrement check below exact and deterministic by construction, not by
+        # timing luck, while every OTHER section's own refresh_density-style re-assertion against decay
+        # simply becomes a no-op-safe redundancy (never a regression) since there is no decay left to
+        # counteract.
+        (root / "config").mkdir(exist_ok=True)
+        (root / "config" / "dynamicpopulation-server.toml").write_text(
+            "propagation_step_interval_ticks = 1200\n"
+        )
         print(f"Booting throwaway dedicated server in {root} with {jar.name} installed", flush=True)
         boot(root)
         print("Server-boot smoke check passed", flush=True)
