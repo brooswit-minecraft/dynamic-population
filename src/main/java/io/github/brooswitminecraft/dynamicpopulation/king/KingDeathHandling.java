@@ -1,46 +1,59 @@
 package io.github.brooswitminecraft.dynamicpopulation.king;
 
-import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.entity.Entity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.SkeletonKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.VillagerKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.ZombieKingEntity;
-import net.neoforged.bus.api.EventPriority;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 
 /**
- * MINECRAFT-414: on an ACTUAL King death (any faction, naturally founded OR command-settled via
- * {@link KingManager#settle} -- deaths are not scoped to natural founding, unlike the spawn announcement),
- * announce it (type-only, no location, matching {@link NaturalFounding#deathAnnouncementText}) and retire
- * its {@link KingRecord.Entry} so {@link KingEntitySync} can never resurrect it and registry-driven seeding
- * stops reading from a dead source. Deliberately narrow: this does NOT touch the faction's population
- * density field at all (only the King's own source/registry record), and does NOT add any King-vs-King
- * hostility/targeting behavior -- that is explicitly a separate follow-up, out of scope here.
+ * MINECRAFT-414: on an ACTUAL, CONFIRMED-IRREVERSIBLE King death (any faction, naturally founded OR
+ * command-settled via {@link KingManager#settle}), announce it (type-only, no location, matching
+ * {@link NaturalFounding#deathAnnouncementText}) and retire its {@link KingRecord.Entry} so
+ * {@link KingEntitySync} can never resurrect it and registry-driven seeding stops reading from a dead
+ * source. Deliberately narrow: this does NOT touch the faction's population density field at all (only
+ * the King's own source/registry record), and does NOT add any King-vs-King hostility/targeting behavior
+ * -- that is explicitly a separate follow-up, out of scope here.
  *
- * <p>Registered at {@link EventPriority#LOWEST} and gated on {@code !event.isCanceled()}: by the time the
- * lowest-priority listener runs, every other mod (e.g. a totem of undying handler) has already had its
- * chance to cancel the death, so this only ever reacts to a death that is actually going to happen -- a
- * genuinely completed death, never a preventable pre-death event.
+ * <p><b>[P1 review fix] Why {@link EntityLeaveLevelEvent}, not {@code LivingDeathEvent}:</b> the earlier
+ * version listened on {@code LivingDeathEvent} at {@code EventPriority.LOWEST}, reasoning that every other
+ * listener would already have had its chance to cancel by then. That reasoning was correct as far as it
+ * went, but incomplete: {@code LOWEST} orders priorities, it does not forbid ANOTHER listener registered
+ * at the SAME priority (this mod's own, or any other mod's) from running after this one and still
+ * cancelling the death -- {@code event.isCanceled()} at this handler's own call time only reflects the
+ * state AT THAT MOMENT, not the event's final outcome. A later cancellation (reviving the King) would
+ * leave this handler having already announced "died" and erased its registry entry for a King that is, in
+ * truth, still alive -- exactly the violation the review flagged.
  *
- * <p>Dedupe and scope are both carried by the single {@link KingDeathRetirement#isGenuineKingDeath} check:
- * a record already removed (by an earlier death callback, or by an administrative
- * {@link KingManager#removeNearest} discard that ran first) is not "genuine" a second time, so unload,
- * despawn/removal, reload, {@link KingEntitySync} migration, and registry reconciliation -- none of which
- * ever fire {@code LivingDeathEvent} in the first place -- have nothing to dedupe against even in the
- * hypothetical case they did.
+ * <p>{@link EntityLeaveLevelEvent} is NOT cancellable (it is a plain notification that an entity has
+ * ALREADY left the level) and fires from {@code LevelCallback#onTrackingEnd}, which for a death only ever
+ * runs via {@code LivingEntity#tickDeath}'s {@code this.remove(Entity.RemovalReason.KILLED)} call -- made
+ * ~1 second (20 ticks) AFTER an uncancelled {@code LivingDeathEvent}, never before, and never at all if
+ * that event was cancelled (a cancelled death never reaches {@code tickDeath}'s removal branch, so this
+ * listener simply never fires for it). Checking {@code entity.getRemovalReason() == KILLED} -- not just
+ * "the entity left the level" -- is what distinguishes a genuine death from the SAME event firing for an
+ * ordinary chunk unload ({@code UNLOADED_TO_CHUNK}/{@code UNLOADED_WITH_PLAYER}, which must never retire a
+ * King that is merely temporarily out of range) or an administrative {@link KingManager#removeNearest}
+ * discard ({@code DISCARDED}, which already removes the registry entry itself before discarding, so even
+ * without this filter {@link KingDeathRetirement#isGenuineKingDeath} would already see it as not-genuine).
+ *
+ * <p>Dedupe is carried by {@link KingDeathRetirement#isGenuineKingDeath}: a record already removed (by an
+ * earlier death callback, or by that administrative discard) is not "genuine" a second time.
  */
 public final class KingDeathHandling {
     private KingDeathHandling() { }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST)
-    public static void onLivingDeath(LivingDeathEvent event) {
-        if (event.isCanceled()) {
+    @SubscribeEvent
+    public static void onEntityLeaveLevel(EntityLeaveLevelEvent event) {
+        Entity entity = event.getEntity();
+        String removalReason = entity.getRemovalReason() == null ? null : entity.getRemovalReason().name();
+        if (!KingDeathRetirement.isConfirmedDeathRemoval(removalReason)) {
             return;
         }
-        Entity entity = event.getEntity();
-        if (!(entity.level() instanceof ServerLevel level)) {
+        if (!(event.getLevel() instanceof ServerLevel level)) {
             return;
         }
         Faction faction = factionOfKing(entity);

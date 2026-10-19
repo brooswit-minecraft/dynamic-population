@@ -64,9 +64,6 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  */
 public final class KingNaturalFounding {
     private static final Random RANDOM = new Random();
-    /** Ceiling of the King's own height (0.9x2.9, matching every King entity's shared size -- see their typeBuilders). */
-    private static final int BODY_HEIGHT_BLOCKS = 3;
-    private static final double BODY_HALF_WIDTH = 0.45;
 
     private static final Map<ServerLevel, Set<ChunkPos>> LOADED_CHUNKS = new HashMap<>();
 
@@ -136,12 +133,22 @@ public final class KingNaturalFounding {
         attemptSite(level, faction, candidate.get());
     }
 
-    /** Every faction with at least one live King entity loaded in {@code level} -- one entity scan, not one per faction. */
+    /**
+     * Every faction with at least one LIVE King entity loaded in {@code level} -- one entity scan, not one
+     * per faction. [P2 review fix]: requires {@code entity.isAlive()}, not just type match -- a King mid
+     * death-animation (dead, but not yet removed: vanilla delays the actual {@code remove} call ~1 second
+     * after death, see {@code LivingEntity#tickDeath}) is still returned by {@code getAllEntities()} but is
+     * NOT a live King by the ticket's own rule ("no live King entity of that type"); counting it would
+     * wrongly suppress the very next boundary's trial for a faction that, in truth, currently has none.
+     */
     private static Set<Faction> loadedKingFactions(ServerLevel level) {
         Set<Faction> present = new HashSet<>();
         for (Entity entity : level.getAllEntities()) {
             if (present.size() == Faction.values().length) {
                 break; // every faction already accounted for; nothing left to learn from the rest of the scan.
+            }
+            if (!entity.isAlive()) {
+                continue;
             }
             for (Faction faction : Faction.values()) {
                 if (!present.contains(faction) && isKingOfFaction(entity, faction)) {
@@ -174,6 +181,14 @@ public final class KingNaturalFounding {
         return coords;
     }
 
+    /**
+     * [P1 review fix]: validates against the King's REAL physical footprint -- base dimensions scaled by
+     * its {@code Attributes.SCALE} (about 1.35x4.35, not the base 0.9x2.9 the old hardcoded constants
+     * used) -- read off a genuine, freshly-constructed probe instance of this exact faction's entity class
+     * (never a guessed/hardcoded number), and checks EVERY block the real footprint would occupy, not just
+     * the single center column. The probe is reused as the actual inserted entity on success (see below),
+     * never a second, independently-constructed instance.
+     */
     private static void attemptSite(ServerLevel level, Faction faction, NaturalFounding.Candidate candidate) {
         int x = candidate.blockX();
         int z = candidate.blockZ();
@@ -183,19 +198,28 @@ public final class KingNaturalFounding {
         }
         int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
         BlockPos feet = new BlockPos(x, surfaceY, z);
-        BlockPos support = feet.below();
 
-        boolean withinBuildHeight = feet.getY() >= level.getMinBuildHeight()
-            && feet.getY() + BODY_HEIGHT_BLOCKS - 1 < level.getMaxBuildHeight();
+        Mob probe = KingManager.newKingEntity(level, faction);
+        var dims = probe.getDimensions(probe.getPose());
+        KingPlacement.Footprint footprint = KingPlacement.footprint(x, z, dims.width(), dims.height());
+
+        // Never require loading a neighbor chunk to validate a footprint straddling a chunk edge: bail
+        // (skip this boundary's trial, no retry) the instant any touched chunk is not already loaded.
+        if (!KingPlacement.everyChunk(footprint, (cx, cz) -> level.hasChunk(cx, cz))) {
+            return;
+        }
+
+        boolean withinBuildHeight = KingPlacement.withinBuildHeight(feet.getY(), footprint.heightBlocks(),
+            level.getMinBuildHeight(), level.getMaxBuildHeight());
         if (!withinBuildHeight) {
             return;
         }
 
-        var supportState = level.getBlockState(support);
-        boolean supportSturdyAndDry = supportState.isFaceSturdy(level, support, Direction.UP)
-            && supportState.getFluidState().isEmpty();
-        boolean bodyDry = bodyDry(level, feet);
-        boolean bodyCollisionFree = level.noCollision(bodyAabb(feet));
+        boolean supportSturdyAndDry = KingPlacement.everyColumn(footprint,
+            (bx, bz) -> supportOk(level, bx, feet.getY() - 1, bz));
+        boolean bodyDry = bodyDry(level, footprint, feet.getY());
+        AABB bodyAabb = bodyAabb(x, z, feet.getY(), dims.width(), dims.height());
+        boolean bodyCollisionFree = level.noCollision(bodyAabb);
 
         if (!NaturalFounding.siteValid(withinBuildHeight, supportSturdyAndDry, bodyDry, bodyCollisionFree)) {
             return;
@@ -208,34 +232,45 @@ public final class KingNaturalFounding {
         }
 
         // Recheck still loaded immediately before insertion -- loaded state could have changed since the
-        // candidate was picked and validated above.
-        if (!level.hasChunk(feet.getX() >> 4, feet.getZ() >> 4)) {
+        // candidate was picked and validated above. Checks the SAME full footprint, not just the center.
+        if (!KingPlacement.everyChunk(footprint, (cx, cz) -> level.hasChunk(cx, cz))) {
             return;
         }
 
-        Mob king = KingManager.spawnKingEntity(level, feet, faction, UUID.randomUUID());
+        Mob king = KingManager.finalizeKingEntity(level, probe, feet, UUID.randomUUID());
         if (level.getEntity(king.getUUID()) == null) {
             return; // insertion did not actually succeed; never commit a registry entry without a real entity.
         }
         level.getData(KingStorage.KING_REGISTRY.get())
-            .add(new KingRecord.Entry(king.getUUID(), feet.getX(), feet.getY(), feet.getZ(), faction));
+            .add(new KingRecord.Entry(king.getUUID(), feet.getX(), feet.getY(), feet.getZ(), faction, true));
         announceSpawn(level, faction);
     }
 
-    private static boolean bodyDry(ServerLevel level, BlockPos feet) {
-        for (int dy = 0; dy < BODY_HEIGHT_BLOCKS; dy++) {
-            if (!level.getBlockState(feet.above(dy)).getFluidState().isEmpty()) {
+    private static boolean supportOk(ServerLevel level, int x, int y, int z) {
+        BlockPos pos = new BlockPos(x, y, z);
+        var state = level.getBlockState(pos);
+        return state.isFaceSturdy(level, pos, Direction.UP) && state.getFluidState().isEmpty();
+    }
+
+    /** Every block the real (scaled) footprint occupies, feet layer through its full real height -- not just the center column. */
+    private static boolean bodyDry(ServerLevel level, KingPlacement.Footprint footprint, int feetY) {
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int dy = 0; dy < footprint.heightBlocks(); dy++) {
+            int y = feetY + dy;
+            boolean layerDry = KingPlacement.everyColumn(footprint, (bx, bz) ->
+                level.getBlockState(cursor.set(bx, y, bz)).getFluidState().isEmpty());
+            if (!layerDry) {
                 return false;
             }
         }
         return true;
     }
 
-    private static AABB bodyAabb(BlockPos feet) {
-        double x = feet.getX() + 0.5;
-        double z = feet.getZ() + 0.5;
-        return new AABB(x - BODY_HALF_WIDTH, feet.getY(), z - BODY_HALF_WIDTH,
-            x + BODY_HALF_WIDTH, feet.getY() + BODY_HEIGHT_BLOCKS, z + BODY_HALF_WIDTH);
+    private static AABB bodyAabb(int centerX, int centerZ, int feetY, double width, double height) {
+        double halfWidth = width / 2.0;
+        double x = centerX + 0.5;
+        double z = centerZ + 0.5;
+        return new AABB(x - halfWidth, feetY, z - halfWidth, x + halfWidth, feetY + height, z + halfWidth);
     }
 
     /**

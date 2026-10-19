@@ -105,8 +105,24 @@ public final class KingManager {
         }
         Mob king = spawnKingEntity(level, pos, faction, UUID.randomUUID());
         level.getData(KingStorage.KING_REGISTRY.get())
-            .add(new KingRecord.Entry(king.getUUID(), pos.getX(), pos.getY(), pos.getZ(), faction));
+            .add(new KingRecord.Entry(king.getUUID(), pos.getX(), pos.getY(), pos.getZ(), faction, true));
         return SettleResult.SETTLED;
+    }
+
+    /**
+     * Constructs a King entity for {@code faction}, WITHOUT any of {@link #finalizeKingEntity}'s
+     * positioning/insertion side effects -- just the bare, unattached {@link Mob}. Used by
+     * {@link #finalizeKingEntity}/{@link #spawnKingEntity} themselves, and (MINECRAFT-414 review fix) by
+     * natural founding to read the real, scale-attribute-inclusive {@code getDimensions(getPose())} off a
+     * genuine instance BEFORE committing to a site, then reused as the actual entity inserted if the site
+     * validates -- never a second, independently-constructed instance.
+     */
+    static Mob newKingEntity(ServerLevel level, Faction faction) {
+        return switch (faction) {
+            case VILLAGER -> new VillagerKingEntity(DynamicPopulationEntities.VILLAGER_KING.get(), level);
+            case ZOMBIE -> new ZombieKingEntity(DynamicPopulationEntities.ZOMBIE_KING.get(), level);
+            case SKELETON -> new SkeletonKingEntity(DynamicPopulationEntities.SKELETON_KING.get(), level);
+        };
     }
 
     /**
@@ -116,11 +132,11 @@ public final class KingManager {
      * entity yet.
      */
     static Mob spawnKingEntity(ServerLevel level, BlockPos pos, Faction faction, UUID uuid) {
-        Mob king = switch (faction) {
-            case VILLAGER -> new VillagerKingEntity(DynamicPopulationEntities.VILLAGER_KING.get(), level);
-            case ZOMBIE -> new ZombieKingEntity(DynamicPopulationEntities.ZOMBIE_KING.get(), level);
-            case SKELETON -> new SkeletonKingEntity(DynamicPopulationEntities.SKELETON_KING.get(), level);
-        };
+        return finalizeKingEntity(level, newKingEntity(level, faction), pos, uuid);
+    }
+
+    /** The positioning/insertion half of {@link #spawnKingEntity}, factored out so natural founding can reuse an already-constructed probe entity instead of building a second one. */
+    static Mob finalizeKingEntity(ServerLevel level, Mob king, BlockPos pos, UUID uuid) {
         king.setUUID(uuid);
         king.moveTo(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, 0, 0);
         king.setPersistenceRequired();

@@ -41,6 +41,15 @@ public final class KingStorage {
      * so defaulting to it on a missing/old-format entry is not a guess, it is the only correct answer.
      */
     private static final String KEY_TYPE = "type";
+    /**
+     * MINECRAFT-414 review fix: new key, additive -- absent on any record written before this fix.
+     * {@link #readHasEntity} treats its absence as: {@code true} if {@link #KEY_TYPE} IS present (every
+     * MINECRAFT-390-or-later record is only ever written to disk after its entity insertion was already
+     * confirmed, so a saved record with a type already implies a confirmed entity), {@code false} only
+     * when {@code KEY_TYPE} is ALSO absent (a genuine pre-390 legacy record, which really never had an
+     * entity at all until {@code KingEntitySync}'s own migration spawns one).
+     */
+    private static final String KEY_HAS_ENTITY = "has_entity";
 
     public static final Supplier<AttachmentType<KingRecord>> KING_REGISTRY = TYPES.register("king_registry", () ->
         AttachmentType.builder((IAttachmentHolder holder) -> new KingRecord())
@@ -52,7 +61,7 @@ public final class KingStorage {
                     for (int i = 0; i < list.size(); i++) {
                         CompoundTag entry = list.getCompound(i);
                         record.add(new KingRecord.Entry(entry.getUUID(KEY_ID), entry.getInt(KEY_X), entry.getInt(KEY_Y),
-                            entry.getInt(KEY_Z), readFaction(entry)));
+                            entry.getInt(KEY_Z), readFaction(entry), readHasEntity(entry)));
                     }
                     return record;
                 }
@@ -68,6 +77,7 @@ public final class KingStorage {
                         entryTag.putInt(KEY_Y, entry.y());
                         entryTag.putInt(KEY_Z, entry.z());
                         entryTag.putString(KEY_TYPE, entry.faction().name());
+                        entryTag.putBoolean(KEY_HAS_ENTITY, entry.hasEntity());
                         list.add(entryTag);
                     }
                     tag.put(KEY_KINGS, list);
@@ -78,6 +88,14 @@ public final class KingStorage {
     /** NBT-to-plain-value glue; the actual migration decision is {@link KingFactionMigration#readFaction}, pure-testable on its own. */
     private static Faction readFaction(CompoundTag entryTag) {
         return KingFactionMigration.readFaction(entryTag.contains(KEY_TYPE, Tag.TAG_STRING) ? entryTag.getString(KEY_TYPE) : null);
+    }
+
+    /** See {@link #KEY_HAS_ENTITY}'s own doc for the migration default this implements. */
+    private static boolean readHasEntity(CompoundTag entryTag) {
+        if (entryTag.contains(KEY_HAS_ENTITY, Tag.TAG_BYTE)) {
+            return entryTag.getBoolean(KEY_HAS_ENTITY);
+        }
+        return entryTag.contains(KEY_TYPE, Tag.TAG_STRING);
     }
 
     private KingStorage() { }

@@ -16,7 +16,8 @@ public final class KingRecord {
     private final List<Entry> kings = new ArrayList<>();
 
     /**
-     * One King: its identity, block position, and faction. {@code id} is also the UUID of the real,
+     * One King: its identity, block position, faction, and (MINECRAFT-414 review fix) whether a real
+     * entity has EVER been confirmed to exist for this id. {@code id} is also the UUID of the real,
      * visible King entity this record corresponds to (see {@code KingEntitySync}) -- this record is not a
      * second, independent "source" of a King, it is the position/faction bookkeeping the pure
      * territory/uniqueness/seeding logic reads, correlated to the one real entity by this shared id.
@@ -24,8 +25,19 @@ public final class KingRecord {
      * <p>{@code faction} defaults to {@link Faction#VILLAGER} when decoding a pre-MINECRAFT-390 record that
      * has no stored type at all (see {@link KingStorage}) -- every King that existed before this story was,
      * by definition, a Villager King.
+     *
+     * <p>{@code hasEntity}: {@code false} ONLY for a genuine pre-MINECRAFT-390 legacy record, which really
+     * never had a real entity constructed for it (the original King mechanism was a level-attachment-only
+     * marker, no entity at all) -- every OTHER way an {@code Entry} is ever created (a fresh
+     * {@code KingManager.settle}, a fresh natural founding, or {@code KingEntitySync}'s own one-time legacy
+     * migration spawn) only ever happens AFTER that call's own entity insertion is confirmed, so
+     * {@code hasEntity} is {@code true} from the moment such an entry first exists. Once {@code true}, it
+     * is NEVER set back to {@code false} by anything in this codebase -- that permanence is exactly what
+     * lets {@code KingEntitySync#sync} refuse to ever spawn a second entity for an id it has already
+     * confirmed real, no matter how stale {@code x/y/z} or how coincidentally loaded some unrelated chunk
+     * is. See {@code KingEntitySync#needsFirstSpawn}'s own doc for the duplicate-entity bug this closes.
      */
-    public record Entry(UUID id, int x, int y, int z, Faction faction) { }
+    public record Entry(UUID id, int x, int y, int z, Faction faction, boolean hasEntity) { }
 
     public List<Entry> kings() {
         return kings;
@@ -61,7 +73,24 @@ public final class KingRecord {
         for (int i = 0; i < kings.size(); i++) {
             Entry entry = kings.get(i);
             if (entry.id().equals(id)) {
-                kings.set(i, new Entry(id, x, y, z, entry.faction()));
+                // Called only when the entity IS currently observed loaded, so hasEntity is forced true
+                // here too (defensive: by invariant it already is, for every entry this is ever called on).
+                kings.set(i, new Entry(id, x, y, z, entry.faction(), true));
+                return;
+            }
+        }
+    }
+
+    /**
+     * Mark {@code id} as having a confirmed real entity, without changing its stored position -- used by
+     * {@link KingEntitySync}'s one-time legacy migration spawn, immediately after that spawn is confirmed to
+     * have actually inserted an entity. A no-op if {@code id} is not present.
+     */
+    public void markHasEntity(UUID id) {
+        for (int i = 0; i < kings.size(); i++) {
+            Entry entry = kings.get(i);
+            if (entry.id().equals(id)) {
+                kings.set(i, new Entry(id, entry.x(), entry.y(), entry.z(), entry.faction(), true));
                 return;
             }
         }
