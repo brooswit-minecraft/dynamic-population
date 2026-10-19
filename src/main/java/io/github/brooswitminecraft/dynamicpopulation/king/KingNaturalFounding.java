@@ -237,12 +237,16 @@ public final class KingNaturalFounding {
             return;
         }
 
-        Mob king = KingManager.finalizeKingEntity(level, probe, feet, UUID.randomUUID());
-        if (level.getEntity(king.getUUID()) == null) {
+        // [P1 review fix, round 2] Use finalizeKingEntity's OWN boolean result (Level#addFreshEntity's own
+        // result) as the success signal -- NOT a subsequent level.getEntity(uuid) re-lookup, which a real
+        // dedicated server proved can momentarily lag a same-tick, same-call insertion in certain call
+        // paths (see KingManager.settle's own doc for the confirmed false-negative and its root cause).
+        UUID uuid = UUID.randomUUID();
+        if (!KingManager.finalizeKingEntity(level, probe, feet, uuid)) {
             return; // insertion did not actually succeed; never commit a registry entry without a real entity.
         }
         level.getData(KingStorage.KING_REGISTRY.get())
-            .add(new KingRecord.Entry(king.getUUID(), feet.getX(), feet.getY(), feet.getZ(), faction, true));
+            .add(new KingRecord.Entry(uuid, feet.getX(), feet.getY(), feet.getZ(), faction, true));
         announceSpawn(level, faction);
     }
 

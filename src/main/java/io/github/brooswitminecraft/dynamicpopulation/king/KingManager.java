@@ -96,14 +96,29 @@ public final class KingManager {
      * entity -- the record's id IS the spawned entity's UUID (see {@link KingRecord.Entry}'s own doc), so
      * there is exactly one source of truth correlating the two, never two independently-created ids.
      *
-     * <p>[P1 review fix] {@link #finalizeKingEntity} never checked whether {@code addFreshEntity} actually
-     * succeeded, so a registry {@link KingRecord.Entry} with {@code hasEntity} true could previously be
-     * committed for an entity that was never really inserted -- a phantom source seeding/counting as a
-     * King forever, with no way to retry (the ticket's own original description already required "check
-     * entity insertion succeeds before committing a source"; natural founding's own
-     * {@code KingNaturalFounding.attemptSite} already did this correctly). Verifying
-     * {@code level.getEntity(king.getUUID()) != null} here, and returning {@link SettleResult#INSERTION_FAILED}
-     * without committing any record at all on failure, closes that gap for the command path too.
+     * <p>[P1 review fix, round 1] {@link #finalizeKingEntity} never checked whether {@code addFreshEntity}
+     * actually succeeded, so a registry {@link KingRecord.Entry} with {@code hasEntity} true could
+     * previously be committed for an entity that was never really inserted -- a phantom source
+     * seeding/counting as a King forever, with no way to retry (the ticket's own original description
+     * already required "check entity insertion succeeds before committing a source"). {@code settle} now
+     * commits a record only when {@link #spawnKingEntity} reports {@code true}.
+     *
+     * <p>[P1 review fix, round 2 -- the dedicated-server smoke test's own real, false-NEGATIVE catch]: the
+     * FIRST version of this fix checked success via a fresh {@code level.getEntity(king.getUUID()) != null}
+     * lookup immediately after spawning, reasoning (by analogy with {@code KingEntitySync}) that this was
+     * the same "is it really there" signal. It was NOT equivalent, and produced a confirmed false negative
+     * in a real dedicated server (the entity genuinely was added -- other King entities of the identical
+     * type summon and persist fine in the same run -- yet that immediate re-lookup returned {@code null}
+     * right after a successful insertion in this exact command-handler call path). Root cause: an entity
+     * is added to the level's {@code knownUuids}/section storage SYNCHRONOUSLY inside
+     * {@code addEntityWithoutEvent} (confirmed by reading the actual mapped
+     * {@code PersistentEntitySectionManager} source) regardless of outcome, but {@code ServerLevel#getEntity
+     * (UUID)} reads a SEPARATE "visible"/tracked lookup ({@code EntityLookup}, populated only when
+     * {@code startTracking} runs for an {@code isAccessible()} chunk visibility) that can momentarily lag
+     * that same-tick, in a command-handler call path specifically. {@code Level#addFreshEntity} itself
+     * ALREADY returns the correct, authoritative success boolean (it IS {@code addEntityWithoutEvent}'s
+     * own return value) -- using THAT directly, instead of re-deriving success from a second, differently
+     * timed lookup, is what actually fixes this; see {@link #finalizeKingEntity}.
      */
     public static SettleResult settle(ServerLevel level, BlockPos pos, Faction faction) {
         if (!suitableTerritory(level, pos)) {
@@ -112,12 +127,12 @@ public final class KingManager {
         if (!wouldBeUnique(level, pos, faction)) {
             return SettleResult.NOT_UNIQUE;
         }
-        Mob king = spawnKingEntity(level, pos, faction, UUID.randomUUID());
-        if (level.getEntity(king.getUUID()) == null) {
+        UUID uuid = UUID.randomUUID();
+        if (!spawnKingEntity(level, pos, faction, uuid)) {
             return SettleResult.INSERTION_FAILED;
         }
         level.getData(KingStorage.KING_REGISTRY.get())
-            .add(new KingRecord.Entry(king.getUUID(), pos.getX(), pos.getY(), pos.getZ(), faction, true));
+            .add(new KingRecord.Entry(uuid, pos.getX(), pos.getY(), pos.getZ(), faction, true));
         return SettleResult.SETTLED;
     }
 
@@ -141,20 +156,26 @@ public final class KingManager {
      * Spawns the real King entity for a record, with the GIVEN uuid (never a freshly-generated one) so the
      * entity and its {@link KingRecord.Entry} always share one identity. Used both by a fresh
      * {@link #settle} and by {@code KingEntitySync}'s migration path for a pre-390 record that has no
-     * entity yet.
+     * entity yet. Returns whether insertion actually succeeded (see {@link #finalizeKingEntity}).
      */
-    static Mob spawnKingEntity(ServerLevel level, BlockPos pos, Faction faction, UUID uuid) {
+    static boolean spawnKingEntity(ServerLevel level, BlockPos pos, Faction faction, UUID uuid) {
         return finalizeKingEntity(level, newKingEntity(level, faction), pos, uuid);
     }
 
-    /** The positioning/insertion half of {@link #spawnKingEntity}, factored out so natural founding can reuse an already-constructed probe entity instead of building a second one. */
-    static Mob finalizeKingEntity(ServerLevel level, Mob king, BlockPos pos, UUID uuid) {
+    /**
+     * The positioning/insertion half of {@link #spawnKingEntity}, factored out so natural founding can
+     * reuse an already-constructed probe entity instead of building a second one. Returns
+     * {@code level.addFreshEntity}'s OWN boolean result directly -- the authoritative, same-call success
+     * signal, confirmed (the hard way, via a real dedicated-server false negative) to be the correct check,
+     * unlike re-deriving success from a subsequent {@code level.getEntity(uuid)} lookup (see {@link #settle}'s
+     * own doc for why that differently-timed lookup is NOT an equivalent signal in this call path).
+     */
+    static boolean finalizeKingEntity(ServerLevel level, Mob king, BlockPos pos, UUID uuid) {
         king.setUUID(uuid);
         king.moveTo(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, 0, 0);
         king.setPersistenceRequired();
         king.finalizeSpawn(level, level.getCurrentDifficultyAt(pos), MobSpawnType.COMMAND, null);
-        level.addFreshEntity(king);
-        return king;
+        return level.addFreshEntity(king);
     }
 
     /** Remove the King nearest to {@code pos} in {@code level}, if one is within {@code withinBlocks}; also removes its entity. */

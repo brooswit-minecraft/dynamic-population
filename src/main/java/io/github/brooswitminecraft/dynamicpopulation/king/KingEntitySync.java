@@ -95,12 +95,18 @@ public final class KingEntitySync {
         List<KingRecord.Entry> toSpawn = needingFirstSpawn(missing,
             entry -> level.hasChunk(entry.x() >> 4, entry.z() >> 4));
         for (KingRecord.Entry entry : toSpawn) {
-            KingManager.spawnKingEntity(level, new BlockPos(entry.x(), entry.y(), entry.z()), entry.faction(), entry.id());
-            if (level.getEntity(entry.id()) != null) {
+            // [P1 review fix, round 2] Use KingManager.spawnKingEntity's OWN boolean result (which is
+            // Level#addFreshEntity's own result) as the success signal -- NOT a subsequent
+            // level.getEntity(id) re-lookup, which a real dedicated server proved can momentarily lag a
+            // same-tick, same-call insertion in certain call paths (see KingManager.settle's own doc for
+            // the confirmed false-negative and its root cause).
+            boolean inserted = KingManager.spawnKingEntity(level,
+                new BlockPos(entry.x(), entry.y(), entry.z()), entry.faction(), entry.id());
+            if (inserted) {
                 record.markHasEntity(entry.id());
             }
-            // else: insertion failed silently; hasEntity stays false, so the NEXT sync call naturally
-            // retries this id via needingFirstSpawn again -- never a permanent block, never a phantom source.
+            // else: insertion failed; hasEntity stays false, so the NEXT sync call naturally retries this
+            // id via needingFirstSpawn again -- never a permanent block, never a phantom source.
         }
     }
 }
