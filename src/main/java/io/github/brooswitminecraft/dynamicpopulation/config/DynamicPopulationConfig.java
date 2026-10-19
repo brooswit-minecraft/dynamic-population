@@ -180,8 +180,7 @@ public final class DynamicPopulationConfig {
             .comment(
                 "Villager King (AC4) territory preference: a location must be no more than this many blocks "
                     + "below the heightmap surface (MOTION_BLOCKING) to count as suitable surface territory. "
-                    + "0..64. Biome preference itself (plains-family) is a fixed tag check, not a numeric "
-                    + "tunable -- there is no meaningful range for 'how plains-y'.")
+                    + "0..64. No biome restriction applies (MINECRAFT-413): biome identity is not checked.")
             .defineInRange("king_max_depth_below_surface_blocks", 4, 0, 64);
         KING_SEED_RADIUS_CELLS = BUILDER
             .comment(

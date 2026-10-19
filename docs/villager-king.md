@@ -1,7 +1,8 @@
 # Kings (MINECRAFT-240/MINECRAFT-28 AC4, generalized to three factions by MINECRAFT-390)
 
 A King is a long-lived, unique "seed" for its faction's population in a
-level: it prefers surface/plains territory to settle in, and raises that
+level: it prefers surface territory to settle in (no biome restriction, see
+"Territory preference" below), and raises that
 faction's cell field's target density (DPOP-4's storage API, read through
 the `king` package) in cells near itself over time. As of MINECRAFT-390
 there are three: the original Villager King, plus a Zombie King and a
@@ -106,7 +107,7 @@ applies the exact same rule (below) to every faction, unmodified. This is a
 deliberate choice per ticket scope item 2 ("preserve existing...constraints
 across factions unless you have a specific, documented reason to adapt"),
 not an oversight — and it is also WHY a Zombie/Skeleton King settling on the
-Villager King's own preferred plains territory is expected, not a bug (see
+Villager King's own territory is expected, not a bug (see
 the cross-faction uniqueness policy above).
 
 ## Uniqueness ("relevant loaded area")
@@ -122,19 +123,19 @@ OF THE SAME FACTION's cell coordinate from the level's real registry.
 
 ## Territory preference
 
-A location is suitable surface/plains territory (`KingTerritory.suitable`)
-when all of:
+A location is suitable surface territory (`KingTerritory.suitable`) when all
+of:
 
-- biome is `minecraft:plains` or `minecraft:sunflower_plains` specifically
-  — not `minecraft:snowy_plains`. Vanilla ships no `BiomeTags.IS_PLAINS`-style
-  tag to check against (verified against the real `BiomeTags` class), and a
-  snowy biome doesn't match this ticket's "surface/plains-preferring"
-  framing. This is a fixed tag-membership check, not a numeric tunable —
-  there's no meaningful range for "how plains-y" a biome is.
 - sky light (`LightLayer.SKY`) at the position is at least
   `king_min_sky_light`.
 - the position is no more than `king_max_depth_below_surface_blocks` blocks
   below the heightmap surface (`Heightmap.Types.MOTION_BLOCKING`).
+
+**No biome restriction applies (MINECRAFT-413):** biome identity is not
+checked at all, for any faction, in any vanilla or modded biome — a prior
+plains-family-only restriction (`minecraft:plains`/`minecraft:sunflower_plains`,
+deliberately excluding `minecraft:snowy_plains`) was removed by that ticket.
+Only sky light and surface depth gate territory now.
 
 ## Seeding
 

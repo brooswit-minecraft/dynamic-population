@@ -15,26 +15,23 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.level.LightLayer;
-import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
  * NeoForge-facing glue for the King mechanism (AC4, generalized to all three factions by MINECRAFT-390):
- * bridges {@link KingTerritory} and {@link KingUniqueness} (pure logic) to the real level (biome/sky-light/
+ * bridges {@link KingTerritory} and {@link KingUniqueness} (pure logic) to the real level (sky-light/
  * heightmap reads, live config) and to {@link KingStorage}'s LEVEL attachment registry, and (new in
  * MINECRAFT-390) spawns the real, visible King entity a settle actually creates.
  *
- * <p>"Plains territory" is {@code minecraft:plains} or {@code minecraft:sunflower_plains} specifically -- NOT
- * {@code minecraft:snowy_plains}, deliberately: vanilla ships no {@code BiomeTags.IS_PLAINS}-style tag to check
- * against (verified against the real {@code BiomeTags} class), and a snowy biome does not match this ticket's
- * "surface/plains-preferring" framing. Flagged as a concrete, overridable choice, not a numeric tunable --
- * see the config comment on {@code king_max_depth_below_surface_blocks}.
+ * <p>Territory eligibility has no biome restriction (MINECRAFT-413): biome identity alone never rejects
+ * settlement, for any faction, in any vanilla or modded biome. Only sky light and surface depth gate
+ * territory -- see the config comments on {@code king_min_sky_light}/{@code king_max_depth_below_surface_blocks}.
  *
  * <p><b>Territory/uniqueness are reused unchanged across all three factions (MINECRAFT-390 scope item 2):</b>
  * no documented reason exists to prefer different terrain for a Zombie/Skeleton King over a Villager King, so
  * {@link #suitableTerritory} applies the exact same rule to every faction. This is a deliberate choice, not
- * an oversight: it also means a Zombie/Skeleton King settling on the Villager King's own preferred plains
- * territory is expected, not a bug -- see the next paragraph for why that is fine.
+ * an oversight: it also means a Zombie/Skeleton King settling on the Villager King's own territory
+ * is expected, not a bug -- see the next paragraph for why that is fine.
  *
  * <p><b>Cross-faction uniqueness policy (MINECRAFT-390 scope item 2, decided and documented here):</b>
  * {@link #wouldBeUnique} only compares a candidate against EXISTING KINGS OF THE SAME FACTION --
@@ -58,14 +55,13 @@ public final class KingManager {
         return kings(level).stream().filter(entry -> entry.faction() == faction).toList();
     }
 
-    /** Whether {@code pos} is suitable surface/plains territory, per {@link KingTerritory} and live config. */
+    /** Whether {@code pos} is suitable surface territory, per {@link KingTerritory} and live config. */
     public static boolean suitableTerritory(ServerLevel level, BlockPos pos) {
         var config = DynamicPopulationConfig.get();
-        boolean plains = level.getBiome(pos).is(Biomes.PLAINS) || level.getBiome(pos).is(Biomes.SUNFLOWER_PLAINS);
         int skyLight = level.getBrightness(LightLayer.SKY, pos);
         int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING, pos.getX(), pos.getZ());
         int depthBelowSurface = Math.max(0, surfaceY - pos.getY());
-        return KingTerritory.suitable(plains, skyLight, depthBelowSurface, config.kingMinSkyLight(),
+        return KingTerritory.suitable(skyLight, depthBelowSurface, config.kingMinSkyLight(),
             config.kingMaxDepthBelowSurfaceBlocks());
     }
 
