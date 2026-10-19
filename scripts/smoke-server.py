@@ -750,6 +750,21 @@ def boot(root):
         # the slice of `seen` accumulated since the last cycle -- not a per-call buffer assembled from
         # whichever drains happened to run -- is a single continuous collection with no window where a line
         # can be dropped on the floor.
+        # MINECRAFT-427 root-cause fix: CI run 39261798628 (job118094201336, diagnostic probe PR27) caught
+        # the PersistenceRequired Fillager (dpop_attacker_check_villager) actually DYING to the opposing
+        # zombie's own permitted reciprocal counter-attack (DPOP_COMBAT_HIT ... damage=3.0 per hit, health
+        # 5.0 -> 2.0 -> dead) partway through the wait window -- a real, unrelated death this check already
+        # explicitly tolerates ("the attacker taking reciprocal damage ... is expected and must not fail
+        # this check"), but hadn't actually survival-provisioned for: 20 starting HP at ~3 dmg/hit does not
+        # reliably survive the full 10-cycle window. That death is what then surfaced as the "could not read
+        # the PersistenceRequired attacker's own health" hard failure -- indistinguishable, from the health
+        # read alone, from the "it was never there" case finding #2 (above) exists to catch, but a totally
+        # different, already-acceptable cause. Topping up the Fillager's health every cycle (exactly the
+        # same pattern refresh_density already uses for density) keeps it alive/queryable for the whole
+        # window WITHOUT touching the actual assertion at all: pass/fail here is decided purely by whether
+        # ANY hit's attacker tag-set (scanned from the server's own DPOP_COMBAT_HIT lines, independent of
+        # health) ever contains the Fillager's own tag -- a real regression would still be caught exactly
+        # as before, at any health value.
         hits_after_mark = 0
         health_missing = False
         attacker_missing = False
@@ -757,6 +772,7 @@ def boot(root):
             for tag in ("dpop_attacker_check_villager", "dpop_attacker_check_zombie"):
                 process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set villager 1000\n')
                 process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set zombie 1000\n')
+            process.stdin.write('execute as @e[tag=dpop_attacker_check_villager] run data merge entity @s {Health:20.0f}\n')
             refresh_density(attacker_pos)
             drain_for(1.5)
             health = query_health_unambiguous("dpop_attacker_check_zombie", "Zombie")
