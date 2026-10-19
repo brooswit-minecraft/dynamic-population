@@ -29,6 +29,46 @@ READY_MARKER = 'Done ('
 HELP_MARKER = 'For help, type "help"'
 
 
+def extract_combat_hits(captured_lines, victim_tag):
+    """Review fix (P2, round 6, smoke-test harness finding #1): parses CombatDamageLogging's
+    'DPOP_COMBAT_HIT' server-log lines for every hit landed on the entity carrying victim_tag,
+    returning the ATTACKER's own logged scoreboard tags for each such hit (a set[str] per hit,
+    possibly empty if the damage had no entity source at all, e.g. environmental).
+
+    This replaces the previous "some untagged Fillager existed somewhere nearby" correlation with
+    real per-hit attribution: the caller can check whether a specific hit's attacker tag-set
+    contains the exact tag given to the ONE entity under test, which is proof, not inference.
+
+    Module-level (not nested in boot()) specifically so scripts/test_smoke_server.py can exercise
+    this exact parser directly against real/synthetic DPOP_COMBAT_HIT log lines without booting a
+    server -- see MINECRAFT-420."""
+    hits = []
+    pattern = re.compile(r"victim_tags=(\S+) attacker=\[(.*?)\] damage=")
+    for line in captured_lines:
+        if "DPOP_COMBAT_HIT" not in line:
+            continue
+        match = pattern.search(line)
+        if not match:
+            continue
+        victim_tags = set(match.group(1).split(","))
+        if victim_tag not in victim_tags:
+            continue
+        attacker_field = match.group(2)
+        tag_match = re.search(r"tags=(\S+)$", attacker_field)
+        attacker_tags = set(tag_match.group(1).split(",")) if tag_match else set()
+        hits.append(attacker_tags)
+    return hits
+
+
+def attributed_combat_hits(captured_lines, victim_tag):
+    """MINECRAFT-420: the real-combat-vs-environmental-damage filter the persistence-exclusion check
+    (target side) applies on top of extract_combat_hits -- a hit with an empty attacker-tag set (e.g.
+    "attacker=[none(source=onFire)]": sun-burn, fire, lava, fall damage, ...) has no entity attacker at
+    all, so it can never be evidence that a PersistenceRequired entity was actually targeted in combat.
+    Returns only the hits that DO have a real entity attacker, each as that attacker's own tag set."""
+    return [tags for tags in extract_combat_hits(captured_lines, victim_tag) if tags]
+
+
 def boot(root):
     process = subprocess.Popen(
         ["bash", "run.sh", "nogui"], cwd=root, stdin=subprocess.PIPE,
@@ -262,32 +302,6 @@ def boot(root):
             process.stdin.flush()
             return drain_for(0.3)
 
-        def extract_combat_hits(captured_lines, victim_tag):
-            """Review fix (P2, round 6, smoke-test harness finding #1): parses CombatDamageLogging's
-            'DPOP_COMBAT_HIT' server-log lines for every hit landed on the entity carrying victim_tag,
-            returning the ATTACKER's own logged scoreboard tags for each such hit (a set[str] per hit,
-            possibly empty if the damage had no entity source at all, e.g. environmental).
-
-            This replaces the previous "some untagged Fillager existed somewhere nearby" correlation with
-            real per-hit attribution: the caller can check whether a specific hit's attacker tag-set
-            contains the exact tag given to the ONE entity under test, which is proof, not inference."""
-            hits = []
-            pattern = re.compile(r"victim_tags=(\S+) attacker=\[(.*?)\] damage=")
-            for line in captured_lines:
-                if "DPOP_COMBAT_HIT" not in line:
-                    continue
-                match = pattern.search(line)
-                if not match:
-                    continue
-                victim_tags = set(match.group(1).split(","))
-                if victim_tag not in victim_tags:
-                    continue
-                attacker_field = match.group(2)
-                tag_match = re.search(r"tags=(\S+)$", attacker_field)
-                attacker_tags = set(tag_match.group(1).split(",")) if tag_match else set()
-                hits.append(attacker_tags)
-            return hits
-
         villager_health = query_health_unambiguous("dpop_battle_villager", "entity.dynamicpopulation.fillager")
         zombie_health = query_health_unambiguous("dpop_battle_zombie", "Zombie")
         battle_resolved = False
@@ -384,32 +398,33 @@ def boot(root):
                 raise RuntimeError("Server exited while setting up the persistence-exclusion check")
             if "DPOP_PERSISTENCE_CHECK_SETUP_DONE" in line:
                 break
-        # Bounded grace tolerance (same philosophy as the attacker mid-goal check's own grace hits, with
-        # the same root cause): sustaining density this high for this long means RECONCILIATION ITSELF
-        # keeps trying to spawn its own additional, untagged Fillagers near this cell (confirmed live --
-        # see refresh_density's own doc); on occasion one such straggler can spawn, land a single hit on
-        # the persistent-tagged zombie, and get swept away by this very loop's next cleanup cycle BEFORE
-        # the health sample after it -- a narrow timing race against this test's own cleanup cadence, not
-        # a product regression. Confirmed separately, in complete isolation with no other test section
-        # running and no race at all (a dedicated standalone repro, run multiple times locally): the
-        # persistent-tagged zombie's health stays at EXACTLY 20.0 for a full 30-second window with zero
-        # exceptions, which is the real, unambiguous proof the exclusion itself works.
+        # MINECRAFT-420 root-cause fix: this loop used to count a "hit" as ANY tick-over-tick health drop
+        # on the persistent-tagged zombie (`health < last_health`), on the theory that the only thing which
+        # could lower it was an untagged reconciliation straggler landing a stray attack. CI run 39192522982
+        # (job117868226841) disproved that: the zombie's health dropped 20.0 -> 15.0 in exactly five steps,
+        # and the server's own DPOP_COMBAT_HIT log lines for every one of those five ticks showed
+        # `attacker=[none(source=onFire)]` -- ordinary daylight sun-burn, not combat at all. The zombie is
+        # the attacker in this scenario's OTHER half (it is free to initiate combat; only being a TARGET is
+        # excluded), so chasing its own target away from `persist_pos` carries it out of the >250-density
+        # radius that keeps SunBurnSuppression active -- the exact wandering-out-of-radius failure mode
+        # `refresh_density`'s own doc and the attacker-check section below already document and guard
+        # against by also re-affirming density at the entity's own current position every cycle. This
+        # target-side check never had that second anchor, and separately, a naive health-delta can never
+        # tell combat and environmental damage apart in the first place.
         #
-        # The exact race frequency is CI-runner-speed-dependent (confirmed by a real CI run on this
-        # ticket's own PR hitting MORE incidental hits than any local run) AND scales with how long this
-        # window stays open (confirmed live: a per-faction isolated cell still accumulates its OWN
-        # straggler spawns at roughly one per reconciliation interval the longer density stays sustained
-        # high, same as the attacker mid-goal check's own post-mark window). Rather than inflate the
-        # tolerance indefinitely to outrun an open-ended wait, this window is kept SHORT (a handful of
-        # cycles) so the straggler rate's own ceiling stays low relative to what a GENUINE regression would
-        # look like: a filler that was NOT actually excluded would keep taking damage at roughly combat's
-        # normal cadence (close to every cycle), which even over this short a window would clearly exceed
-        # the tolerance below -- the short window is what keeps that distinction clean, not the tolerance
-        # number by itself.
+        # Fix: (1) also refresh density at the zombie's own current position every cycle, closing the
+        # wandering-out-of-radius gap; (2) stop inferring hits from health deltas altogether and instead
+        # read the server's own DPOP_COMBAT_HIT log lines (the same `seen`/extract_combat_hits machinery the
+        # attacker-check section below already relies on for precise, source-attributed hit detection) --
+        # only a hit with a real entity attacker counts, so sun-burn, fire, lava, fall damage, etc. can
+        # never be miscounted as a combat hit again, deterministically, not just less often. The small
+        # grace tolerance for a genuine reconciliation straggler landing one real attack is preserved.
         max_tolerated_hits = 4
         hits_observed = 0
-        last_health = 20.0
+        hit_scan_index = len(seen)
         for _ in range(10):
+            process.stdin.write('execute as @e[tag=dpop_persistent_check] at @s run dpop set villager 1000\n')
+            process.stdin.write('execute as @e[tag=dpop_persistent_check] at @s run dpop set zombie 1000\n')
             refresh_density(persist_pos)
             health = query_health_unambiguous("dpop_persistent_check", "Zombie")
             if health is None:
@@ -418,15 +433,18 @@ def boot(root):
                     "this would indicate the persistence-exclusion fix did not actually exclude it from "
                     "being targeted."
                 )
-            if health < last_health:
+            scan_end = len(seen)
+            new_lines = seen[hit_scan_index:scan_end]
+            hit_scan_index = scan_end
+            for attacker_tags in attributed_combat_hits(new_lines, "dpop_persistent_check"):
                 hits_observed += 1
-                last_health = health
                 if hits_observed > max_tolerated_hits:
                     raise RuntimeError(
                         f"Persistence-exclusion check FAILED: the PersistenceRequired-tagged filler took "
-                        f"sustained damage ({hits_observed} hits, beyond the {max_tolerated_hits}-hit grace "
-                        f"tolerance for a transient reconciliation straggler) -- this would indicate the "
-                        f"persistence-exclusion fix did not actually exclude it from being targeted."
+                        f"sustained damage from a real attacker (tags={sorted(attacker_tags)}) "
+                        f"({hits_observed} hits, beyond the {max_tolerated_hits}-hit grace tolerance for a "
+                        f"transient reconciliation straggler) -- this would indicate the persistence-"
+                        f"exclusion fix did not actually exclude it from being targeted."
                     )
         if hits_observed == 0:
             print(
