@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicpopulation.king;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -34,23 +35,38 @@ public final class KingEntitySync {
     }
 
     /**
-     * Spawn exactly one entity for every King record currently missing its entity in {@code level}.
+     * Spawn exactly one entity for every King record currently missing its entity in {@code level} --
+     * AFTER first refreshing every LOADED King's stored position to where it actually currently is (see
+     * {@link KingRecord#updatePosition}'s own doc for the duplicate-entity bug this refresh fixes: a King
+     * that wandered away from its frozen founding/last-synced position could otherwise be wrongly
+     * "respawned" at that stale spot once its real, current chunk unloads, if the stale spot's chunk
+     * happens to still be loaded).
      *
-     * <p>Only considers a record whose CHUNK IS CURRENTLY LOADED: {@code level.getEntity(id)} only ever
-     * finds entities belonging to loaded chunks, so an unloaded-chunk record would otherwise look
+     * <p>Only respawns a record whose (now-current) CHUNK IS CURRENTLY LOADED: {@code level.getEntity(id)}
+     * only ever finds entities belonging to loaded chunks, so an unloaded-chunk record would otherwise look
      * "missing" purely because nothing has loaded it back in yet -- spawning a second entity for it would
      * be exactly the duplicate-entity bug this ticket forbids. Vanilla's own entity persistence always
      * reloads a {@code persistenceRequired} entity together with its chunk, with no lazy delay, so once a
-     * King's chunk IS loaded, "no entity found" really does mean "never spawned yet" (a legacy record).
+     * King's chunk IS loaded, "no entity found" really does mean "never spawned yet" (a legacy record, or
+     * one whose stale anchor was never refreshed because it was never observed loaded since).
      */
     public static void sync(ServerLevel level) {
-        for (KingRecord.Entry entry : KingManager.kings(level)) {
-            BlockPos pos = new BlockPos(entry.x(), entry.y(), entry.z());
-            if (!level.hasChunk(pos.getX() >> 4, pos.getZ() >> 4)) {
+        KingRecord record = level.getData(KingStorage.KING_REGISTRY.get());
+        Set<UUID> loadedIds = new HashSet<>();
+        for (KingRecord.Entry entry : List.copyOf(record.kings())) {
+            var entity = level.getEntity(entry.id());
+            if (entity == null) {
                 continue;
             }
-            if (level.getEntity(entry.id()) == null) {
-                KingManager.spawnKingEntity(level, pos, entry.faction(), entry.id());
+            loadedIds.add(entry.id());
+            BlockPos current = entity.blockPosition();
+            if (current.getX() != entry.x() || current.getY() != entry.y() || current.getZ() != entry.z()) {
+                record.updatePosition(entry.id(), current.getX(), current.getY(), current.getZ());
+            }
+        }
+        for (KingRecord.Entry entry : missingEntities(record.kings(), loadedIds)) {
+            if (level.hasChunk(entry.x() >> 4, entry.z() >> 4)) {
+                KingManager.spawnKingEntity(level, new BlockPos(entry.x(), entry.y(), entry.z()), entry.faction(), entry.id());
             }
         }
     }

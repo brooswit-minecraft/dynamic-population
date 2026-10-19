@@ -107,14 +107,23 @@ public final class KingNaturalFounding {
         }
     }
 
+    /**
+     * Performance note (flagged in review): a naive per-faction scan would call {@code level.getAllEntities()}
+     * three times on every eligible boundary. Scanning once and classifying every loaded entity's faction
+     * in that single pass avoids tripling the cost of what is already the most expensive step here, with
+     * no change in behavior -- {@link #loadedKingFactions} returns exactly the same information
+     * {@code anyLoadedKingOfFaction} would have, for every faction, from one pass instead of three.
+     */
     private static void attempt(ServerLevel level, DynamicPopulationConfig.Snapshot config) {
+        Set<Faction> loadedKingFactions = loadedKingFactions(level);
         for (Faction faction : Faction.values()) {
-            attemptFaction(level, faction, config);
+            attemptFaction(level, faction, config, loadedKingFactions.contains(faction));
         }
     }
 
-    private static void attemptFaction(ServerLevel level, Faction faction, DynamicPopulationConfig.Snapshot config) {
-        if (!NaturalFounding.eligibleFaction(anyLoadedKingOfFaction(level, faction))) {
+    private static void attemptFaction(ServerLevel level, Faction faction, DynamicPopulationConfig.Snapshot config,
+            boolean anyLoadedKingOfFaction) {
+        if (!NaturalFounding.eligibleFaction(anyLoadedKingOfFaction)) {
             return;
         }
         if (!NaturalFounding.trial(RANDOM, config.kingNaturalFoundingChanceDenominator())) {
@@ -127,14 +136,21 @@ public final class KingNaturalFounding {
         attemptSite(level, faction, candidate.get());
     }
 
-    /** Whether ANY loaded entity is a King of {@code faction} -- real loaded entities only, never the registry. */
-    private static boolean anyLoadedKingOfFaction(ServerLevel level, Faction faction) {
+    /** Every faction with at least one live King entity loaded in {@code level} -- one entity scan, not one per faction. */
+    private static Set<Faction> loadedKingFactions(ServerLevel level) {
+        Set<Faction> present = new HashSet<>();
         for (Entity entity : level.getAllEntities()) {
-            if (isKingOfFaction(entity, faction)) {
-                return true;
+            if (present.size() == Faction.values().length) {
+                break; // every faction already accounted for; nothing left to learn from the rest of the scan.
+            }
+            for (Faction faction : Faction.values()) {
+                if (!present.contains(faction) && isKingOfFaction(entity, faction)) {
+                    present.add(faction);
+                    break;
+                }
             }
         }
-        return false;
+        return present;
     }
 
     static boolean isKingOfFaction(Entity entity, Faction faction) {
