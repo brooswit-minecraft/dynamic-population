@@ -92,6 +92,18 @@ sequence added in DPOP-12. `docs/release-note-template.md` is the template
 to follow when a future change to either touches a CHANGELOG `## Migration`
 section (see below).
 
+## Debug population HUD
+
+MINECRAFT-417 adds a compact, toggleable debug HUD showing the Villager/Fillager, Zombie, and Skeleton
+population densities (0..1000 ppt) for the population cell the player currently stands in -- the exact
+same typed per-faction field `PopulationCombatTargetGoal` reads for spawn/combat decisions, never a
+separate mob count. Toggle it with the `key.dynamicpopulation.toggle_hud` keybind (default `G`,
+remappable in Controls); it renders in the top-right corner, separate from any mission HUD. An
+unreadable/unknown cell (unloaded anchor chunk, corrupt data, or a dimension that isn't simulated) is
+shown as "unknown", never faked as a zero. Updates are server-driven, bounded, and targeted: only sent to
+players who toggled the HUD on, at most once every `hud_update_interval_ticks` (config, default 10), and
+only when the player's cell/layer, dimension, or a density actually changed.
+
 ## CHANGELOG conventions
 
 `CHANGELOG.md` entries are headed by the version and a `Category:

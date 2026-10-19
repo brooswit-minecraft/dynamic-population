@@ -43,6 +43,12 @@ public class DynamicPopulationMod {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.SunImmunityTicking.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.CombatDamageLogging.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.SpawnRateBudget.class);
+        // MINECRAFT-417: debug population HUD. PopulationHudNetwork registers only the client-to-server
+        // toggle payload here (common/server-safe); the server-to-client payload's handler is registered
+        // separately by the Dist.CLIENT-scoped client.PopulationHudClientNetwork (auto-discovered via its
+        // own @EventBusSubscriber, same as DynamicPopulationClient -- never referenced from this class).
+        modEventBus.addListener(io.github.brooswitminecraft.dynamicpopulation.hud.PopulationHudNetwork::register);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.hud.PopulationHudTracker.class);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {

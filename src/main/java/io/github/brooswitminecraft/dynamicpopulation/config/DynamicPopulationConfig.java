@@ -96,6 +96,9 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue FILLAGER_OTHER_DEATH_TARGET_DECREMENT;
     private static final ModConfigSpec.IntValue VILLAGE_DESTRUCTION_TARGET_DECREMENT;
 
+    // MINECRAFT-417: debug population HUD.
+    private static final ModConfigSpec.IntValue HUD_UPDATE_INTERVAL_TICKS;
+
     /** Smallest direction weight the config accepts: a zero weight would turn the weighted rule back into strict priority. */
     public static final double MIN_WEIGHT = 0.01;
 
@@ -108,7 +111,7 @@ public final class DynamicPopulationConfig {
             int unsafeDeathTargetDecrement, int promotionEmeraldCost, int villageTradeTargetIncrement,
             int villageBreedingTargetIncrement, int villageBuildingTargetIncrement, int villageFarmingTargetIncrement,
             int villageGolemCreationTargetIncrement, int fillagerOtherDeathTargetDecrement,
-            int villageDestructionTargetDecrement) {
+            int villageDestructionTargetDecrement, int hudUpdateIntervalTicks) {
         public Snapshot {
             if (!(weightDown >= MIN_WEIGHT) || !(weightSides >= MIN_WEIGHT) || !(weightUp >= MIN_WEIGHT)) {
                 throw new IllegalArgumentException("propagation direction weights must be > 0");
@@ -239,6 +242,14 @@ public final class DynamicPopulationConfig {
         VILLAGE_DESTRUCTION_TARGET_DECREMENT = BUILDER.comment("Village activity (AC6): ppt removed from each cell touched by an explosion's destroyed blocks (1..1000).")
             .defineInRange("village_destruction_target_decrement", 15, 1, 1000);
 
+        HUD_UPDATE_INTERVAL_TICKS = BUILDER
+            .comment(
+                "Debug population HUD (MINECRAFT-417): server ticks between checking each HUD-enabled "
+                    + "player for a cell/layer crossing, dimension change, or density change, and sending a "
+                    + "bounded, targeted update only when something actually changed (1..1200). This is NOT a "
+                    + "broadcast rate -- only players who toggled the HUD on are ever checked or sent to.")
+            .defineInRange("hud_update_interval_ticks", 10, 1, 1200);
+
         SPEC = BUILDER.build();
     }
 
@@ -268,7 +279,8 @@ public final class DynamicPopulationConfig {
             SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), UNSAFE_DEATH_TARGET_DECREMENT.get(), PROMOTION_EMERALD_COST.get(),
             VILLAGE_TRADE_TARGET_INCREMENT.get(), VILLAGE_BREEDING_TARGET_INCREMENT.get(), VILLAGE_BUILDING_TARGET_INCREMENT.get(),
             VILLAGE_FARMING_TARGET_INCREMENT.get(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.get(),
-            FILLAGER_OTHER_DEATH_TARGET_DECREMENT.get(), VILLAGE_DESTRUCTION_TARGET_DECREMENT.get());
+            FILLAGER_OTHER_DEATH_TARGET_DECREMENT.get(), VILLAGE_DESTRUCTION_TARGET_DECREMENT.get(),
+            HUD_UPDATE_INTERVAL_TICKS.get());
     }
 
     private static Snapshot defaults() {
@@ -281,7 +293,8 @@ public final class DynamicPopulationConfig {
             SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), UNSAFE_DEATH_TARGET_DECREMENT.getDefault(), PROMOTION_EMERALD_COST.getDefault(),
             VILLAGE_TRADE_TARGET_INCREMENT.getDefault(), VILLAGE_BREEDING_TARGET_INCREMENT.getDefault(), VILLAGE_BUILDING_TARGET_INCREMENT.getDefault(),
             VILLAGE_FARMING_TARGET_INCREMENT.getDefault(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.getDefault(),
-            FILLAGER_OTHER_DEATH_TARGET_DECREMENT.getDefault(), VILLAGE_DESTRUCTION_TARGET_DECREMENT.getDefault());
+            FILLAGER_OTHER_DEATH_TARGET_DECREMENT.getDefault(), VILLAGE_DESTRUCTION_TARGET_DECREMENT.getDefault(),
+            HUD_UPDATE_INTERVAL_TICKS.getDefault());
     }
 
     /**
