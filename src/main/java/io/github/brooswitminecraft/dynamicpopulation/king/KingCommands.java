@@ -48,8 +48,6 @@ public final class KingCommands {
         KingManager.SettleResult result = KingManager.settle(level, pos, faction);
         String text = switch (result) {
             case SETTLED -> "a " + faction + " King settled at " + pos;
-            case UNSUITABLE_TERRITORY -> "not suitable territory for a King to settle here";
-            case NOT_UNIQUE -> "too close to an existing " + faction + " King -- not unique within the relevant area";
             case INSERTION_FAILED -> "King entity insertion failed -- nothing was settled";
         };
         boolean settled = result == KingManager.SettleResult.SETTLED;

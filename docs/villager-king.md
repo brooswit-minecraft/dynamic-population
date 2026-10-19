@@ -1,10 +1,11 @@
 # Kings (MINECRAFT-240/MINECRAFT-28 AC4, generalized to three factions by MINECRAFT-390)
 
 A King is a long-lived, unique "seed" for its faction's population in a
-level: it prefers surface territory to settle in (no biome restriction, see
-"Territory preference" below), and raises that
-faction's cell field's target density (DPOP-4's storage API, read through
-the `king` package) in cells near itself over time. As of MINECRAFT-390
+level: explicit (player/command) placement has no eligibility gate at all
+(MINECRAFT-424 -- see "Explicit placement has no eligibility gate" below),
+and it raises that faction's cell field's target density (DPOP-4's storage
+API, read through the `king` package) in cells near itself over time. As of
+MINECRAFT-390
 there are three: the original Villager King, plus a Zombie King and a
 Skeleton King, all following the same rules unless this doc says otherwise.
 
@@ -32,12 +33,13 @@ King entity class's own javadoc for the exact values chosen and why.
 **Sun immunity is unconditional for Zombie/Skeleton Kings**, not
 threshold-gated like the ordinary filler's `>250`-density override below —
 a King must never die to environmental sun exposure (a hard persistence
-requirement), and the King's own territory preference (high sky light) would
-otherwise put it directly in the sun. `isSunBurnTick()` is overridden to
-always return `false` on both King entity classes; no other fire/lava
+requirement), and a King can be placed in direct sky light at any time
+(explicit placement has no sky-light preference at all, see below) which
+would otherwise put it directly in the sun. `isSunBurnTick()` is overridden
+to always return `false` on both King entity classes; no other fire/lava
 immunity is granted.
 
-**The `KingRecord` attachment is still the pure territory/uniqueness/seeding
+**The `KingRecord` attachment is still the pure position/seeding
 bookkeeping** — it is not a second, independent "King", it is position/
 faction bookkeeping correlated to the ONE real entity by a shared id: the
 record's `id` IS the spawned entity's UUID. `KingEntitySync` keeps the two in
@@ -56,8 +58,29 @@ This story (MINECRAFT-390) did not auto-spawn Kings during world generation
 or via any natural trigger — `/dpop king settle [faction]` was the only way
 to found one. **MINECRAFT-414 implements natural founding** (see "Natural
 King founding (MINECRAFT-414)" below); `/dpop king settle` remains, unchanged,
-as the command-driven path, still gated by the territory/uniqueness checks
-described above, which natural founding deliberately does not inherit.
+as the command-driven path.
+
+## Explicit placement has no eligibility gate (MINECRAFT-424)
+
+`/dpop king settle` (and any other explicit player/command King placement
+entrypoint — `/dpop king settle` is the only one that exists; there is no
+King spawn egg or other item-based placement) no longer checks ANYTHING
+before spawning the entity, for any faction: no sky-light/surface-depth
+territory preference, and no same-faction spacing/uniqueness check. A King
+can be placed underground, in the dark, in any biome (already true since
+MINECRAFT-413), or directly next to another King of the same faction. The
+only way `settle` can now fail is `INSERTION_FAILED` (the entity genuinely
+could not be inserted into the level) — see "Commands" below.
+
+This removed the `king_min_sky_light`/`king_max_depth_below_surface_blocks`/
+`king_uniqueness_radius_cells` config keys and the pure `KingTerritory`/
+`KingUniqueness` logic classes entirely, along with their unit tests —
+nothing else in the codebase ever read them. Natural founding
+(`KingNaturalFounding`) never routed through these checks in the first
+place (see "Natural King founding (MINECRAFT-414)" below) and is completely
+unaffected: its own cadence, probability, loaded-live-King check, density
+gate, and physical-placement safety checks are all unchanged by this
+removal.
 
 ## Natural King founding (MINECRAFT-414)
 
@@ -86,11 +109,9 @@ dry, collision-free body, and the faction's own local target density at that
 site must be genuinely READABLE (not an unloaded anchor or corrupt data
 masquerading as a zero) AND exactly zero. Any single failure skips this
 boundary's trial entirely — there is no retry with a different site, and no
-hidden biome/sky-light/surface-depth/registry-distance gate the way
-`/dpop king settle` has (natural founding never routes through
-`KingManager.suitableTerritory`/`wouldBeUnique`, by this ticket's explicit
-requirement; MINECRAFT-413 revises those same gates independently for the
-command path only).
+biome/sky-light/surface-depth/registry-distance gate at all (natural
+founding never had one; MINECRAFT-424 later removed the equivalent gate
+from the command path too, so neither path has one today).
 
 On success, natural founding reuses `KingManager.spawnKingEntity` (the exact
 same entity-construction path `settle` uses) and only commits a
@@ -147,62 +168,18 @@ specific cause.
 - `KingEntitySync.missingEntities` is the pure decision this reduces to
   (`KingEntitySyncTest` covers it directly).
 
-## Cross-faction uniqueness policy (MINECRAFT-390, decided and documented here)
+## Cross-faction coexistence (MINECRAFT-390, historical)
 
-**A King's "relevant loaded area" (uniqueness radius) is evaluated PER
-FACTION ONLY.** `KingManager.wouldBeUnique` filters `KingManager.kings(level)`
-down to the SAME faction before the pure `KingUniqueness.allowed` check ever
-runs. Concretely: **a Zombie King and a Villager King CAN coexist at or near
-the same location** — only two Kings of the *same* faction are mutually
-exclusive within `king_uniqueness_radius_cells`.
-
-Rationale: `king_uniqueness_radius_cells` represents "don't oversaturate one
-faction's own seed network in one area" — a resource-competition concept
-that is meaningless ACROSS factions, since each faction's density lives in
-its own independent cell-field attachment (`cell_field` / `zombie_cell_field`
-/ `skeleton_cell_field`) and seeding one faction's field never touches
-another's. Allowing cross-faction coexistence is also exactly what makes
-"battle lines" (see the threshold-combat doc below) possible at all: two
-different factions' Kings seeding overlapping territory IS the intended way
-a contested front forms.
-
-## Territory preference applies unchanged to every faction (MINECRAFT-390)
-
-No documented reason exists to prefer different terrain for a Zombie/
-Skeleton King over a Villager King, so `KingManager.suitableTerritory`
-applies the exact same rule (below) to every faction, unmodified. This is a
-deliberate choice per ticket scope item 2 ("preserve existing...constraints
-across factions unless you have a specific, documented reason to adapt"),
-not an oversight — and it is also WHY a Zombie/Skeleton King settling on the
-Villager King's own territory is expected, not a bug (see
-the cross-faction uniqueness policy above).
-
-## Uniqueness ("relevant loaded area")
-
-Defined concretely as: a second King OF THE SAME FACTION may not
-spawn/persist within `king_uniqueness_radius_cells` cells (horizontal,
-Chebyshev distance, at the live `cell_size`) of an existing King of that
-faction in the same level (see "Cross-faction uniqueness policy" above for
-why this is same-faction only). Vertical layer is ignored — a King's
-territory is a horizontal surface region, not a column. `KingUniqueness.allowed`
-is the pure check; `KingManager.wouldBeUnique` feeds it every existing King
-OF THE SAME FACTION's cell coordinate from the level's real registry.
-
-## Territory preference
-
-A location is suitable surface territory (`KingTerritory.suitable`) when all
-of:
-
-- sky light (`LightLayer.SKY`) at the position is at least
-  `king_min_sky_light`.
-- the position is no more than `king_max_depth_below_surface_blocks` blocks
-  below the heightmap surface (`Heightmap.Types.MOTION_BLOCKING`).
-
-**No biome restriction applies (MINECRAFT-413):** biome identity is not
-checked at all, for any faction, in any vanilla or modded biome — a prior
-plains-family-only restriction (`minecraft:plains`/`minecraft:sunflower_plains`,
-deliberately excluding `minecraft:snowy_plains`) was removed by that ticket.
-Only sky light and surface depth gate territory now.
+Before MINECRAFT-424 removed same-faction spacing entirely, a King's
+"relevant loaded area" (uniqueness radius) was evaluated PER FACTION ONLY —
+a Zombie King and a Villager King could already coexist at or near the same
+location, and that is still true today, just no longer because of a
+faction filter: as of MINECRAFT-424 there is no spacing check between ANY
+two Kings, same-faction or cross-faction. Two different factions' Kings
+seeding overlapping territory remains the intended way "battle lines" (see
+the threshold-combat doc below) form, and a Zombie/Skeleton King settling
+where a Villager King already is (or vice versa, or even another King of
+the identical faction) is expected, not a bug.
 
 ## Seeding
 
@@ -229,14 +206,17 @@ All read live via the existing volatile-snapshot pattern (see
 
 | key | default | range | `RestartType` |
 |---|---|---|---|
-| `king_uniqueness_radius_cells` | 8 | 1..64 | `NONE` |
-| `king_min_sky_light` | 9 | 0..15 | `NONE` |
-| `king_max_depth_below_surface_blocks` | 4 | 0..64 | `NONE` |
 | `king_seed_radius_cells` | 3 | 1..64 | `NONE` |
 | `king_seed_rate_ppt` | 5 | 1..1000 | `NONE` |
 | `king_seed_interval_ticks` | 20 | 1..1200 | `NONE` |
 
-`RestartType.NONE` for all six: none of these values are part of the saved
+MINECRAFT-424 removed `king_uniqueness_radius_cells`/`king_min_sky_light`/
+`king_max_depth_below_surface_blocks` outright (not just their effect): the
+explicit-placement eligibility gate they backed no longer exists anywhere
+in the codebase. A pre-existing saved config file with these keys still
+present on disk is harmless — they are simply no longer read.
+
+`RestartType.NONE` for the remaining three: none of these values are part of the saved
 cell-field or config-file *format* (unlike `cell_size`, which is
 `RestartType.WORLD` because it changes the footprint the saved data is keyed
 against) — they only tune King behavior at runtime, so a live change is safe
@@ -250,12 +230,12 @@ if its default changes later — none of them affect `cell_size` or
 
 ## Commands
 
-`/dpop king settle [villager|zombie|skeleton]` (op level 2): attempts to
-found a King of the given faction (defaults to `villager` — bare
-`/dpop king settle` is unchanged from before this story) at the command
-source's position, checking territory suitability then same-faction
-uniqueness, in that order; reports which check failed if it didn't settle;
-on success, spawns the real King entity.
+`/dpop king settle [villager|zombie|skeleton]` (op level 2): founds a King
+of the given faction (defaults to `villager` — bare `/dpop king settle` is
+unchanged from before this story) at the command source's position. As of
+MINECRAFT-424 there is no eligibility gate at all — it always spawns the
+real King entity there, succeeding unless entity insertion itself fails
+(`INSERTION_FAILED`, reported back if it happens).
 `/dpop king list`: lists every King in the level (faction, id, position).
 `/dpop king remove`: removes the nearest King within 64 blocks of the
 command source (any faction), if any — removes both its record and its

@@ -34,9 +34,8 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 /**
  * MINECRAFT-414: rare natural King founding, independent of the command-driven {@link KingManager#settle}
- * path -- deliberately does NOT call {@link KingManager#suitableTerritory}/{@link KingManager#wouldBeUnique}
- * (those carry the MINECRAFT-390 biome/light/depth/registry-distance gates that MINECRAFT-413 is separately
- * revising for the command path; natural founding never inherits them, by this ticket's own requirement).
+ * path -- never had, and still does not have, any biome/light/depth/registry-distance eligibility gate
+ * (MINECRAFT-424 later removed the command path's equivalent gate too, so neither path has one today).
  * It DOES reuse {@link KingManager#spawnKingEntity}, so a naturally founded King is constructed exactly the
  * same way a command-settled one is.
  *

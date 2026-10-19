@@ -10,8 +10,8 @@ import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
  * Pure natural-founding decision logic (MINECRAFT-414): the 200-tick gate, the one 1-in-10000 trial per
  * faction per boundary, random loaded-chunk/column candidate selection, the minimal placement/density
  * validity composition, and the success-announcement text. No Minecraft classes -- directly unit-testable
- * the same way {@link KingTerritory}/{@link KingUniqueness} are; {@code KingNaturalFounding} is the one
- * Minecraft/NeoForge-facing glue that drives this against a real {@code ServerLevel}.
+ * the same way {@link KingPlacement} is; {@code KingNaturalFounding} is the one Minecraft/NeoForge-facing
+ * glue that drives this against a real {@code ServerLevel}.
  */
 public final class NaturalFounding {
     private NaturalFounding() { }
