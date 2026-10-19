@@ -83,15 +83,26 @@ public final class PopulationHudClientState {
     }
 
     /**
-     * Runs every client tick (cheap: one field read, one equality check) and clears {@link #cache} the
-     * moment the client's own dimension no longer matches the last one observed -- see the class doc for
-     * why this replaces the old (broken) server-event-based listener.
+     * Runs every client tick (cheap: a couple of field reads, a couple of equality checks) and clears
+     * {@link #cache} the moment the client's own dimension no longer matches the last one observed -- see
+     * the class doc for why this replaces the old (broken) server-event-based listener.
+     *
+     * <p>MINECRAFT-417 round-2 review fix: a new-dimension {@link PopulationHudPayload} can arrive via
+     * {@link #onReceived} -- updating {@link #cache} to the new dimension's fresh snapshot -- before this
+     * tick handler next runs. At that point {@link #lastSeenDimension} is still stale (it only moves here),
+     * so a naive "live dimension != lastSeenDimension" check would wrongly conclude a change needs
+     * discarding and clear the cache that was JUST refreshed with good data. The fix: also check whether the
+     * currently cached snapshot's own dimension already matches the live one -- if a packet already brought
+     * it up to date, retain it and simply catch {@code lastSeenDimension} up; only clear when the cache does
+     * NOT already match. See {@link #shouldClearForDimensionChange}, the pure decision this defers to.
      */
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         var player = Minecraft.getInstance().player;
         ResourceLocation current = player == null ? null : player.level().dimension().location();
-        if (shouldClearForDimensionChange(lastSeenDimension, current)) {
+        PopulationHudSnapshot cachedSnapshot = cache;
+        ResourceLocation cachedDimension = cachedSnapshot == null ? null : cachedSnapshot.dimension();
+        if (shouldClearForDimensionChange(lastSeenDimension, current, cachedDimension)) {
             cache = null;
         }
         lastSeenDimension = current;
@@ -99,12 +110,19 @@ public final class PopulationHudClientState {
 
     /**
      * Pure decision, directly unit-testable without a real client/level: clear the cache only when there
-     * WAS a previously-known dimension and the current one genuinely differs from it. A {@code null}
-     * {@code lastSeen} (nothing observed yet) or a {@code null} {@code current} (no player right now --
-     * disconnect/login already clear separately) must never trigger a clear here, only a real dimension
-     * change while both are known.
+     * WAS a previously-known dimension, the current one genuinely differs from it, AND the cached snapshot
+     * (if any) is not ALREADY for the current dimension -- that last case means a fresh packet already
+     * arrived via {@link #onReceived} and updated the cache before this tick ran, so the stale-looking
+     * {@code lastSeen}/{@code current} mismatch must not discard it. A {@code null} {@code lastSeen}
+     * (nothing observed yet) or a {@code null} {@code current} (no player right now -- disconnect/login
+     * already clear separately) must never trigger a clear here, only a real dimension change while both
+     * are known and the cache hasn't already caught up.
      */
-    static boolean shouldClearForDimensionChange(ResourceLocation lastSeen, ResourceLocation current) {
-        return lastSeen != null && current != null && !lastSeen.equals(current);
+    static boolean shouldClearForDimensionChange(ResourceLocation lastSeen, ResourceLocation current,
+            ResourceLocation cachedDimension) {
+        if (lastSeen == null || current == null || lastSeen.equals(current)) {
+            return false;
+        }
+        return cachedDimension == null || !cachedDimension.equals(current);
     }
 }

@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicpopulation.hud;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,5 +62,65 @@ class PopulationHudTrackerTest {
     @Test
     void offToOffIsNotAGenuineOffToOnTransition() {
         assertFalse(PopulationHudTracker.isGenuineOffToOnTransition(false, false));
+    }
+
+    /**
+     * MINECRAFT-417 round-2 review fix: an ALTERNATING off/on/off/on... sequence must not force an
+     * immediate out-of-band sample on every single off-&gt;on leg -- each one is individually a "genuine"
+     * transition by {@link PopulationHudTracker#isGenuineOffToOnTransition}, but only a true first-ever
+     * enable (no prior {@code LAST_SENT} entry at all) may bypass {@code hud_update_interval_ticks}.
+     * {@link PopulationHudTracker#shouldForceImmediateSample} is the pure gate that enforces this.
+     */
+    @Test
+    void firstEverEnableWithNoPriorLastSentForcesImmediateSample() {
+        assertTrue(PopulationHudTracker.shouldForceImmediateSample(false, true, false));
+    }
+
+    @Test
+    void reEnablingAfterAPriorLastSentDoesNotForceImmediateSample() {
+        // Genuine off->on transition, but LAST_SENT memory for this player survived the toggle-off -- this
+        // is exactly the alternating-toggle case the review called out, and must not force a send.
+        assertFalse(PopulationHudTracker.shouldForceImmediateSample(false, true, true));
+    }
+
+    @Test
+    void redundantOnToOnNeverForcesImmediateSampleRegardlessOfLastSent() {
+        assertFalse(PopulationHudTracker.shouldForceImmediateSample(true, true, false));
+        assertFalse(PopulationHudTracker.shouldForceImmediateSample(true, true, true));
+    }
+
+    @Test
+    void disablingNeverForcesImmediateSampleRegardlessOfLastSent() {
+        assertFalse(PopulationHudTracker.shouldForceImmediateSample(true, false, false));
+        assertFalse(PopulationHudTracker.shouldForceImmediateSample(true, false, true));
+        assertFalse(PopulationHudTracker.shouldForceImmediateSample(false, false, false));
+        assertFalse(PopulationHudTracker.shouldForceImmediateSample(false, false, true));
+    }
+
+    /**
+     * End-to-end (still pure/unit, no real server) regression for the alternating-toggle scenario itself:
+     * simulate the decision sequence an off/on/off/on... spam would drive through
+     * {@link PopulationHudTracker#shouldForceImmediateSample}, tracking "has a LAST_SENT entry" as the real
+     * {@code setEnabled} would (set on the first forced send, left alone by every later disable). Only the
+     * very first leg may force a send -- every later off->on leg within the same tracked lifetime must not,
+     * keeping the number of forced out-of-band sends bounded to at most one per player, not one per
+     * toggle-pair.
+     */
+    @Test
+    void alternatingToggleSequenceForcesAtMostOneImmediateSample() {
+        boolean wasEnabled = false;
+        boolean hasPriorLastSent = false;
+        int forcedSends = 0;
+
+        boolean[] sequence = {true, false, true, false, true, false, true};
+        for (boolean enabled : sequence) {
+            if (enabled && PopulationHudTracker.shouldForceImmediateSample(wasEnabled, enabled, hasPriorLastSent)) {
+                forcedSends++;
+                hasPriorLastSent = true;
+            }
+            wasEnabled = enabled;
+        }
+
+        assertEquals(1, forcedSends, "rapid off/on/off/on... spam must force at most one out-of-band sample");
     }
 }
