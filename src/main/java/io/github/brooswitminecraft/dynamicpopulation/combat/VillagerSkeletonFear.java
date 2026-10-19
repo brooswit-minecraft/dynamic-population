@@ -37,13 +37,23 @@ import net.neoforged.neoforge.event.tick.EntityTickEvent;
  * vanilla sensor every Villager already has) -- using the exact same 8-block distance vanilla uses for
  * Zombie ({@link #SKELETON_FEAR_DISTANCE_BLOCKS}, reusing "the existing zombie fear behaviour/appropriate
  * distance" per the ticket's explicit instruction), and only ever WRITES a Skeleton into that memory when it
- * is at least as close as whatever vanilla's own sensor already wrote there (see
- * {@link #shouldPreferSkeleton}) -- it never overrides a real, closer vanilla hostile -- and only ever
- * ERASES a value IT ITSELF wrote (tracked in {@link #OUR_SKELETON}, see {@link #shouldEraseOurs}), never a
- * vanilla-written one. Firing from {@code EntityTickEvent.Post} (not {@code Pre}) guarantees this runs AFTER
- * the entity's own tick -- and therefore after {@code Brain#tick()}'s own sensor pass -- every single game
- * tick, so whichever of the two writes last in a tick simply reflects the nearer threat, which is also the
- * semantically correct "nearest hostile overall" outcome.
+ * is at least as close as whatever vanilla's own sensor already wrote there -- it never overrides a real,
+ * closer vanilla hostile -- and only ever ERASES a value IT ITSELF wrote (tracked in {@link #OUR_SKELETON}),
+ * never a vanilla-written one. Firing from {@code EntityTickEvent.Post} (not {@code Pre}) guarantees this
+ * runs AFTER the entity's own tick -- and therefore after {@code Brain#tick()}'s own sensor pass -- every
+ * single game tick, so whichever of the two writes last in a tick simply reflects the nearer threat, which
+ * is also the semantically correct "nearest hostile overall" outcome.
+ *
+ * <p><b>Review fix (round 1):</b> the first version of {@code onTick} split this into two separate pure
+ * predicates ({@code shouldPreferSkeleton}/{@code shouldEraseOurs}) called from two separate branches of
+ * the wiring method -- but the "no skeleton found" branch unconditionally removed {@link #OUR_SKELETON}'s
+ * entry for this villager BEFORE the erase decision below it ever read that same entry, so
+ * {@code currentMemoryIsStillOurs} was always {@code false} by construction and the erase path was
+ * unreachable in practice. That was a wiring-level SEQUENCING mistake a predicate split across two
+ * separate calls cannot, by itself, make unreachable at the type level. {@link #decide} now folds the
+ * ENTIRE ownership/memory state transition -- including what {@link #OUR_SKELETON} should become -- into
+ * one pure function callers simply obey by acting on its returned {@link Action}, removing that class of
+ * bug and making the transition directly unit-testable.
  */
 public final class VillagerSkeletonFear {
     /** Matches vanilla {@code VillagerHostilesSensor.ACCEPTABLE_DISTANCE_FROM_HOSTILES}'s own Zombie entry. */
@@ -51,24 +61,40 @@ public final class VillagerSkeletonFear {
 
     private VillagerSkeletonFear() { }
 
-    /**
-     * Pure decision (unit-testable without any Minecraft type): given whether the villager currently has
-     * ANY {@code NEAREST_HOSTILE} memory value and, if so, how far away (squared) it is, should a Skeleton
-     * at {@code skeletonDistSq} be written in its place? "Nearest wins" -- the same notion vanilla's own
-     * {@code NearestVisibleLivingEntities#findClosest} list-order traversal encodes, evaluated here against
-     * a single externally-supplied candidate instead of a whole list.
-     */
-    public static boolean shouldPreferSkeleton(boolean currentHostilePresent, double currentHostileDistSq, double skeletonDistSq) {
-        return !currentHostilePresent || skeletonDistSq <= currentHostileDistSq;
+    /** What {@link #onTick} should do to the villager's {@code NEAREST_HOSTILE} memory and bookkeeping. */
+    public enum Action {
+        /** Write the nearby Skeleton into {@code NEAREST_HOSTILE} and record it as ours. */
+        SET_SKELETON,
+        /** Erase {@code NEAREST_HOSTILE} (it holds a Skeleton WE wrote, which no longer qualifies) and drop bookkeeping. */
+        ERASE,
+        /** Touch nothing -- either a real (non-ours) hostile already occupies the slot, or there is nothing to erase. */
+        NOOP
     }
 
     /**
-     * Pure decision: our own previously-written Skeleton entry must be cleared once the Skeleton that
-     * earned it no longer qualifies (out of range, dead, or simply not re-found this tick) -- but ONLY if
-     * nothing else (a real vanilla hostile) has since taken over that memory slot.
+     * Pure decision (unit-testable without any Minecraft type): the complete state transition for one
+     * villager's {@code NEAREST_HOSTILE} memory on one tick.
+     *
+     * <p>"Nearest wins": a present, qualifying Skeleton is written whenever there is no current hostile at
+     * all, or the Skeleton is at least as close as whatever already occupies the memory -- the same notion
+     * vanilla's own {@code NearestVisibleLivingEntities#findClosest} list-order traversal encodes, evaluated
+     * here against a single externally-supplied candidate instead of a whole list. A FARTHER Skeleton never
+     * preempts a real, closer hostile -- the slot is left exactly as-is (a vanilla-owned replacement is
+     * preserved untouched).
+     *
+     * <p>Erasure is the mirror case: only reachable when there is NO qualifying Skeleton AND the memory
+     * currently holds the exact Skeleton WE previously wrote there ({@code currentMemoryIsOurs}) -- never a
+     * vanilla-written value, and never when nothing is there to begin with.
      */
-    public static boolean shouldEraseOurs(boolean skeletonStillQualifies, boolean currentMemoryIsStillOurs) {
-        return !skeletonStillQualifies && currentMemoryIsStillOurs;
+    public static Action decide(boolean skeletonPresent, boolean currentHostilePresent, double currentHostileDistSq,
+            double skeletonDistSq, boolean currentMemoryIsOurs) {
+        if (skeletonPresent && (!currentHostilePresent || skeletonDistSq <= currentHostileDistSq)) {
+            return Action.SET_SKELETON;
+        }
+        if (!skeletonPresent && currentMemoryIsOurs) {
+            return Action.ERASE;
+        }
+        return Action.NOOP;
     }
 
     /** Which Skeleton (if any) WE most recently wrote into a given villager's {@code NEAREST_HOSTILE}. */
@@ -82,25 +108,30 @@ public final class VillagerSkeletonFear {
         Brain<Villager> brain = villager.getBrain();
         Optional<LivingEntity> current = brain.getMemory(MemoryModuleType.NEAREST_HOSTILE);
         Optional<Skeleton> nearestSkeleton = nearestSkeleton(villager);
-
-        if (nearestSkeleton.isPresent()) {
-            Skeleton skeleton = nearestSkeleton.get();
-            double skeletonDistSq = villager.distanceToSqr(skeleton);
-            boolean currentPresent = current.isPresent();
-            double currentDistSq = currentPresent ? villager.distanceToSqr(current.get()) : 0.0;
-            if (shouldPreferSkeleton(currentPresent, currentDistSq, skeletonDistSq)) {
-                brain.setMemory(MemoryModuleType.NEAREST_HOSTILE, skeleton);
-                OUR_SKELETON.put(villager, skeleton);
-                return;
-            }
-        } else {
-            OUR_SKELETON.remove(villager);
-        }
-
         LivingEntity ours = OUR_SKELETON.get(villager);
-        boolean currentMemoryIsStillOurs = ours != null && current.isPresent() && current.get() == ours;
-        if (shouldEraseOurs(nearestSkeleton.isPresent(), currentMemoryIsStillOurs)) {
-            brain.eraseMemory(MemoryModuleType.NEAREST_HOSTILE);
+        boolean currentMemoryIsOurs = ours != null && current.isPresent() && current.get() == ours;
+        boolean skeletonPresent = nearestSkeleton.isPresent();
+        double currentDistSq = current.isPresent() ? villager.distanceToSqr(current.get()) : 0.0;
+        double skeletonDistSq = skeletonPresent ? villager.distanceToSqr(nearestSkeleton.get()) : 0.0;
+
+        switch (decide(skeletonPresent, current.isPresent(), currentDistSq, skeletonDistSq, currentMemoryIsOurs)) {
+            case SET_SKELETON -> {
+                brain.setMemory(MemoryModuleType.NEAREST_HOSTILE, nearestSkeleton.get());
+                OUR_SKELETON.put(villager, nearestSkeleton.get());
+            }
+            case ERASE -> {
+                brain.eraseMemory(MemoryModuleType.NEAREST_HOSTILE);
+                OUR_SKELETON.remove(villager);
+            }
+            case NOOP -> {
+                // Only drop now-stale bookkeeping when it is no longer accurate -- never while the slot is
+                // still genuinely ours (skeletonPresent is false here, and if currentMemoryIsOurs were true
+                // this would have been ERASE, not NOOP, so reaching NOOP with the skeleton gone always means
+                // currentMemoryIsOurs is already false) and never touch a vanilla-owned value itself.
+                if (!skeletonPresent) {
+                    OUR_SKELETON.remove(villager);
+                }
+            }
         }
     }
 
