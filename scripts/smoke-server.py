@@ -333,10 +333,16 @@ def boot(root):
                 )
             settled_factions.add(faction)
             # Tag the entity that JUST settled at this exact, known position -- not "any entity of this
-            # type" -- so the verification below is specific to it.
+            # type" -- so the verification below is specific to it. `execute positioned ... as @e[distance=
+            # ...]` (not a bare `@e[x=,y=,z=,distance=]` selector) because the console command source has
+            # no implicit position of its own for `distance=` to measure from; `positioned` is what gives
+            # it one, and this exact pattern is already proven elsewhere in this file (e.g. `execute as
+            # @e[tag=...] at @s run dpop set ...` above). A first attempt using the bare selector form
+            # reproducibly got "No entity was found" in CI even though the King had just, verifiably,
+            # settled right there.
             process.stdin.write(
-                f'tag @e[type=dynamicpopulation:{faction.lower()}_king,x=100,y=-59,z=0,distance=..5] '
-                f'add {settle_tag}\n'
+                f'execute positioned 100 -59 0 as @e[type=dynamicpopulation:{faction.lower()}_king,distance=..5] '
+                f'run tag @s add {settle_tag}\n'
             )
             process.stdin.flush()
         # Confirm the settle command actually created a real, queryable entity of each type (not just a
