@@ -67,9 +67,6 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue STEP_INTERVAL_TICKS;
     private static final ModConfigSpec.IntValue TRAVERSABLE_SAMPLE_SPACING;
 
-    private static final ModConfigSpec.IntValue KING_UNIQUENESS_RADIUS_CELLS;
-    private static final ModConfigSpec.IntValue KING_MIN_SKY_LIGHT;
-    private static final ModConfigSpec.IntValue KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS;
     private static final ModConfigSpec.IntValue KING_SEED_RADIUS_CELLS;
     private static final ModConfigSpec.IntValue KING_SEED_RATE_PPT;
     private static final ModConfigSpec.IntValue KING_SEED_INTERVAL_TICKS;
@@ -106,7 +103,6 @@ public final class DynamicPopulationConfig {
 
     public record Snapshot(int cellSize, int configVersion, double weightDown, double weightSides, double weightUp,
             double spreadFraction, int stepIntervalTicks, int traversableSampleSpacing,
-            int kingUniquenessRadiusCells, int kingMinSkyLight, int kingMaxDepthBelowSurfaceBlocks,
             int kingSeedRadiusCells, int kingSeedRatePpt, int kingSeedIntervalTicks,
             int kingNaturalFoundingIntervalTicks, int kingNaturalFoundingChanceDenominator, int samplingHorizontalRadius,
             int samplingVerticalRadius, int fillagersPerFullCell, int reconciliationRefillPerInterval,
@@ -171,23 +167,6 @@ public final class DynamicPopulationConfig {
                 + "sampled on a lattice this many blocks apart (4..32). Smaller is more accurate and slower.")
             .defineInRange("traversable_sample_spacing", 8, 4, 32);
 
-        KING_UNIQUENESS_RADIUS_CELLS = BUILDER
-            .comment(
-                "Villager King (AC4): a second King may not spawn/persist within this many cells (horizontally, "
-                    + "Chebyshev distance, same cell_size the field uses) of an existing King -- this IS the "
-                    + "ticket's 'relevant loaded area'. 1..64.")
-            .defineInRange("king_uniqueness_radius_cells", 8, 1, 64);
-        KING_MIN_SKY_LIGHT = BUILDER
-            .comment(
-                "Villager King (AC4) territory preference: minimum sky light (0 = none, 15 = fully open to sky) "
-                    + "a location needs to count as suitable surface territory. 0..15.")
-            .defineInRange("king_min_sky_light", 9, 0, 15);
-        KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS = BUILDER
-            .comment(
-                "Villager King (AC4) territory preference: a location must be no more than this many blocks "
-                    + "below the heightmap surface (MOTION_BLOCKING) to count as suitable surface territory. "
-                    + "0..64. No biome restriction applies (MINECRAFT-413): biome identity is not checked.")
-            .defineInRange("king_max_depth_below_surface_blocks", 4, 0, 64);
         KING_SEED_RADIUS_CELLS = BUILDER
             .comment(
                 "Villager King (AC4) seeding: horizontal radius, in cells (Chebyshev, King's own layer only), "
@@ -289,7 +268,6 @@ public final class DynamicPopulationConfig {
     private static Snapshot readSnapshot() {
         return new Snapshot(CELL_SIZE.get(), CONFIG_VERSION.get(), WEIGHT_DOWN.get(), WEIGHT_SIDES.get(), WEIGHT_UP.get(),
             SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get(),
-            KING_UNIQUENESS_RADIUS_CELLS.get(), KING_MIN_SKY_LIGHT.get(), KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.get(),
             KING_SEED_RADIUS_CELLS.get(), KING_SEED_RATE_PPT.get(), KING_SEED_INTERVAL_TICKS.get(),
             KING_NATURAL_FOUNDING_INTERVAL_TICKS.get(), KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR.get(),
             SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), UNSAFE_DEATH_TARGET_DECREMENT.get(), PROMOTION_EMERALD_COST.get(),
@@ -303,8 +281,7 @@ public final class DynamicPopulationConfig {
         return new Snapshot(CELL_SIZE.getDefault(), CONFIG_VERSION.getDefault(), WEIGHT_DOWN.getDefault(),
             WEIGHT_SIDES.getDefault(), WEIGHT_UP.getDefault(), SPREAD_FRACTION.getDefault(),
             STEP_INTERVAL_TICKS.getDefault(), TRAVERSABLE_SAMPLE_SPACING.getDefault(),
-            KING_UNIQUENESS_RADIUS_CELLS.getDefault(), KING_MIN_SKY_LIGHT.getDefault(),
-            KING_MAX_DEPTH_BELOW_SURFACE_BLOCKS.getDefault(), KING_SEED_RADIUS_CELLS.getDefault(),
+            KING_SEED_RADIUS_CELLS.getDefault(),
             KING_SEED_RATE_PPT.getDefault(), KING_SEED_INTERVAL_TICKS.getDefault(),
             KING_NATURAL_FOUNDING_INTERVAL_TICKS.getDefault(), KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR.getDefault(),
             SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), UNSAFE_DEATH_TARGET_DECREMENT.getDefault(), PROMOTION_EMERALD_COST.getDefault(),
