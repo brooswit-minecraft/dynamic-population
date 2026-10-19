@@ -390,10 +390,22 @@ any King's `KILLED` removal regardless of cause, so a King killed by an
 opposing King's `KingHostilityTargetGoal`-driven attack goes through that
 exact same path with no code on either side needing to know about the
 other. End-to-end "King A kills King B, which announces once and retires
-its source" has not been exercised in a live/dedicated-server run by either
-ticket's agent as of this writing -- both `./gradlew build`/`test` passing
-with both changes present on `main` is build-level, not behavioral,
-evidence; live verification remains unassigned.
+its source" HAS since been exercised in a live dedicated-server run (not
+just `./gradlew build`/`test`): two `/dpop king settle`-founded Kings
+(Villager, Zombie) were placed in range with no further intervention; the
+Villager King died in real combat, exactly one "A Villager King has died."
+was logged, `/dpop king list` dropped from 2 to 1 King(s) immediately, and
+a full `stop`+restart of the server afterward still showed exactly 1
+King(s) (the survivor, identity preserved) with zero leaked spawn/death
+announcements -- no resurrection of the dead King. See the MINECRAFT-416
+Jira ticket for the full run transcript and the three other six-direction
+acquisition/damage pairings (Villager/Zombie, Villager/Skeleton,
+Zombie/Skeleton), each independently confirming bidirectional real combat
+damage from a clean, undamaged starting baseline. Not covered by that run:
+a long-running/production-scale playtest, or every other acceptance
+sub-case (density 0/499/500/501, unload-mid-chase) -- those are covered by
+source inspection and existing unit tests instead (see the ticket for the
+item-by-item reconciliation).
 
 ## Zombie/Skeleton fillers (MINECRAFT-390)
 
