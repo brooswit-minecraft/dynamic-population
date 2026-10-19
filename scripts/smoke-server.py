@@ -341,20 +341,40 @@ def boot(root):
         # check above, which only proves the entity TYPE itself can be summoned, not that the settle command
         # route wires through to a real spawn. Type-only (see note above for why this is specific enough
         # now that this section runs after this script's own raw-summoned Kings are already dead).
-        process.stdin.write(
-            'execute if entity @e[type=dynamicpopulation:villager_king] '
-            'if entity @e[type=dynamicpopulation:zombie_king] '
-            'if entity @e[type=dynamicpopulation:skeleton_king] '
-            'run say DPOP_KING_SETTLE_COMMAND_OK\n'
-        )
+        # MINECRAFT-425 diagnostic: report EACH type's presence individually and unconditionally (never
+        # silently no-op like a chained `execute if entity ... if entity ...` does), so a failure here
+        # names exactly which type(s), if any, are missing rather than just timing out uninformatively.
+        for king_type in ["villager_king", "zombie_king", "skeleton_king"]:
+            process.stdin.write(
+                f'execute if entity @e[type=dynamicpopulation:{king_type}] run say DPOP_{king_type.upper()}_PRESENT\n'
+            )
+            process.stdin.write(
+                f'execute unless entity @e[type=dynamicpopulation:{king_type}] run say DPOP_{king_type.upper()}_MISSING\n'
+            )
+        process.stdin.write('say DPOP_KING_SETTLE_DIAGNOSTIC_DONE\n')
         process.stdin.flush()
+        presence = {}
         deadline = time.monotonic() + 30
         while True:
             line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
             if line is None:
                 raise RuntimeError("Server exited while verifying /dpop king settle created real entities")
-            if "DPOP_KING_SETTLE_COMMAND_OK" in line:
+            for king_type in ["villager_king", "zombie_king", "skeleton_king"]:
+                if f"DPOP_{king_type.upper()}_PRESENT" in line:
+                    presence[king_type] = True
+                if f"DPOP_{king_type.upper()}_MISSING" in line:
+                    presence[king_type] = False
+            if "DPOP_KING_SETTLE_DIAGNOSTIC_DONE" in line:
                 break
+        missing = [k for k, present in presence.items() if not present]
+        if missing or len(presence) != 3:
+            raise RuntimeError(
+                f"MINECRAFT-425 diagnostic: /dpop king settle reported SETTLED for every faction, but "
+                f"these King type(s) are not queryable afterward: {missing or 'all (no response at all)'} "
+                f"-- presence map: {presence}. See captured output above for any King death/combat/removal "
+                f"activity in between that would explain it."
+            )
+        print("DPOP king settle diagnostic: all three King types present and queryable", flush=True)
         assert settled_factions == {"VILLAGER", "ZOMBIE", "SKELETON"}
         print("Verified /dpop king settle creates real King entities for every faction", flush=True)
 
