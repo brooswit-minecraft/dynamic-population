@@ -39,17 +39,39 @@ public final class PopulationHudTracker {
 
     private PopulationHudTracker() { }
 
-    /** Driven only by an explicit client toggle -- never inferred, never defaulted on for anyone. */
+    /**
+     * Driven only by an explicit client toggle -- never inferred, never defaulted on for anyone.
+     *
+     * <p>Only a genuine OFF-&gt;ON transition forces an immediate first sample (clearing
+     * {@link #LAST_SENT} so the next poll is guaranteed to send). A redundant ON-&gt;ON toggle (a client
+     * re-sending {@code enabled=true} while already tracked -- a buggy/spammy client, or a keybind double
+     * fire) is a no-op for timing purposes: it must NOT reset {@link #LAST_SENT} or force another
+     * immediate send, or it would bypass {@code hud_update_interval_ticks} and let a repeated toggle force
+     * unbounded update frequency. See {@link #isGenuineOffToOnTransition}, the pure decision this defers
+     * to.
+     */
     public static void setEnabled(ServerPlayer player, boolean enabled) {
         UUID id = player.getUUID();
+        boolean wasEnabled = ENABLED.contains(id);
         if (enabled) {
             ENABLED.add(id);
-            LAST_SENT.remove(id);
-            sendIfChanged(player);
+            if (isGenuineOffToOnTransition(wasEnabled, true)) {
+                LAST_SENT.remove(id);
+                sendIfChanged(player);
+            }
         } else {
             ENABLED.remove(id);
             LAST_SENT.remove(id);
         }
+    }
+
+    /**
+     * Pure gating check, directly unit-testable: only a transition from NOT-enabled to enabled counts as
+     * "genuine" and warrants forcing an immediate sample bypassing the update-interval gate. Already-enabled
+     * staying enabled (a redundant ON-&gt;ON toggle) must return {@code false}.
+     */
+    static boolean isGenuineOffToOnTransition(boolean wasEnabled, boolean enabled) {
+        return enabled && !wasEnabled;
     }
 
     @SubscribeEvent

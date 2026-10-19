@@ -43,10 +43,11 @@ public class DynamicPopulationMod {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.SunImmunityTicking.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.combat.CombatDamageLogging.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.propagation.SpawnRateBudget.class);
-        // MINECRAFT-417: debug population HUD. PopulationHudNetwork registers only the client-to-server
-        // toggle payload here (common/server-safe); the server-to-client payload's handler is registered
-        // separately by the Dist.CLIENT-scoped client.PopulationHudClientNetwork (auto-discovered via its
-        // own @EventBusSubscriber, same as DynamicPopulationClient -- never referenced from this class).
+        // MINECRAFT-417: debug population HUD. PopulationHudNetwork registers BOTH payload types/codecs
+        // here (common/server-safe, including the server-to-client one -- required so a dedicated server
+        // also joins the channel negotiation for it); only the actual server-to-client HANDLER LOGIC is
+        // Dist.CLIENT-scoped, in client.PopulationHudClientNetwork#handle, reached only via a method
+        // reference that the common registrar never resolves/runs on a dedicated server.
         modEventBus.addListener(io.github.brooswitminecraft.dynamicpopulation.hud.PopulationHudNetwork::register);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.register(io.github.brooswitminecraft.dynamicpopulation.hud.PopulationHudTracker.class);
     }

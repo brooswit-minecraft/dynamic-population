@@ -36,4 +36,30 @@ class PopulationHudTrackerTest {
             assertTrue(PopulationHudTracker.dueThisTick(tick, 1));
         }
     }
+
+    /**
+     * MINECRAFT-417 review fix: only a genuine OFF-&gt;ON transition may force an immediate first sample
+     * (bypassing {@code hud_update_interval_ticks}) -- a redundant ON-&gt;ON toggle (a spammy/buggy client
+     * re-sending {@code enabled=true}, or a keybind double-fire) must be a no-op for timing purposes, or it
+     * could force unbounded update frequency.
+     */
+    @Test
+    void offToOnIsAGenuineTransition() {
+        assertTrue(PopulationHudTracker.isGenuineOffToOnTransition(false, true));
+    }
+
+    @Test
+    void redundantOnToOnIsNotAGenuineTransition() {
+        assertFalse(PopulationHudTracker.isGenuineOffToOnTransition(true, true));
+    }
+
+    @Test
+    void onToOffIsNotAGenuineOffToOnTransition() {
+        assertFalse(PopulationHudTracker.isGenuineOffToOnTransition(true, false));
+    }
+
+    @Test
+    void offToOffIsNotAGenuineOffToOnTransition() {
+        assertFalse(PopulationHudTracker.isGenuineOffToOnTransition(false, false));
+    }
 }
