@@ -1,5 +1,7 @@
 package io.github.brooswitminecraft.dynamicpopulation.entity;
 
+import io.github.brooswitminecraft.dynamicpopulation.combat.KingHostilityTargetGoal;
+import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.level.Level;
@@ -47,5 +49,18 @@ public final class ZombieKingEntity extends Zombie {
     @Override
     protected boolean isSunBurnTick() {
         return false;
+    }
+
+    /**
+     * MINECRAFT-416: adds cross-type King-vs-King hostility on top of unmodified vanilla Zombie AI --
+     * {@code super.registerGoals()} keeps every vanilla goalSelector/targetSelector goal (melee attack,
+     * reinforcement calls, player/villager/golem targeting, {@code HurtByTargetGoal}, etc.) intact; this
+     * only ADDS {@link KingHostilityTargetGoal} at targetSelector priority 0. See that goal's own class doc
+     * for why priority 0 is safe here without needing to know vanilla Zombie's own priority numbers.
+     */
+    @Override
+    protected void registerGoals() {
+        super.registerGoals();
+        this.targetSelector.addGoal(0, new KingHostilityTargetGoal(this, Faction.ZOMBIE));
     }
 }

@@ -267,6 +267,62 @@ join-time (`FillerTargetingInstaller`, the same pattern
 already act on whatever target is set, so no separate attack-execution goal
 is needed there.
 
+## Cross-type King hostility (MINECRAFT-416)
+
+All three Kings are now mutually hostile ACROSS TYPE: a Villager King fights
+a Zombie or Skeleton King, a Zombie King fights a Villager or Skeleton King,
+and so on — all six directed pairings. This is a SEPARATE predicate
+(`KingHostilityTargeting`) from the threshold-combat `PopulationCombatTargeting`
+above, deliberately so: that targeting filter explicitly excludes every King
+and never classifies one into a population-combat `Faction` at all (so a King
+remains forever ineligible as an ordinary filler's target), and widening it
+to cover Kings too would have broken that guarantee. `KingHostilityTargeting`
+instead maps each King entity class directly to its own `Faction` and treats
+two different King factions as always mutually eligible — **no density/
+threshold prerequisite of any kind** (unlike the 500-ppt gate above), and
+**same-type Kings never target each other**.
+
+Installed as a `targetSelector` goal (`KingHostilityTargetGoal`) on every
+King:
+
+- `VillagerKingEntity` previously had NO `targetSelector` goals and NO
+  attack-execution goal at all (`PanicGoal` only). It now also gets a
+  `MeleeAttackGoal` (`goalSelector` priority 2, same slot/reasoning as
+  Fillager's own MINECRAFT-390 addition above) and a real `ATTACK_DAMAGE`
+  attribute (6.0 — see `DynamicPopulationEntities#createAttributes`;
+  `Mob.createMobAttributes()`'s near-zero default would otherwise make the
+  new attack goal toothless). `PanicGoal` (priority 1) and `MeleeAttackGoal`
+  (priority 2) share the `MOVE` flag exactly like Fillager's own goals do, so
+  a recently-hurt Villager King's flee still preempts attacking for as long
+  as that flee window lasts.
+- `ZombieKingEntity`/`SkeletonKingEntity` need no new attack-execution goal —
+  they already inherit full vanilla Zombie/Skeleton combat AI unchanged.
+  `KingHostilityTargetGoal` is added at `targetSelector` priority **0** (the
+  highest), ahead of vanilla's own `HurtByTargetGoal`/player-targeting goals,
+  so an opposing King is always detected and engaged without needing to be
+  hit first — while still falling through to unmodified vanilla behavior
+  (retaliation, player targeting, reinforcement calls, etc.) whenever no
+  opposing King is in range. Installed by overriding `registerGoals()` and
+  calling `super.registerGoals()` first, so every other vanilla goal is
+  preserved exactly as-is.
+
+Like the threshold-combat goal above, this is continuous/reactive: a dead,
+removed, or unloaded opposing King is dropped as a target the very next
+evaluation cycle (`canContinueToUse` re-checks `isAlive()` live), so no
+stale target or synthetic King can survive a reload. Range is each King's
+own live `Attributes.FOLLOW_RANGE` value, not a new hardcoded constant.
+
+**Lifecycle/death-notification integration**: MINECRAFT-414 owns the actual
+King death-chat-announcement and dead-source-retirement path (so that a real
+combat death between two Kings announces exactly once, and chunk
+unload/ordinary reload never falsely announces one). This ticket's combat
+changes do not implement or duplicate that path — they only make the combat
+that can trigger a real King death possible. As of this PR, MINECRAFT-414
+had not yet landed (still in progress, no pushed branch/PR), so end-to-end
+"King A kills King B, which announces once and retires its source" has not
+been exercised together in one build; see the MINECRAFT-416 PR description
+for what was and was not verified.
+
 ## Zombie/Skeleton fillers (MINECRAFT-390)
 
 Zombie and Skeleton are now ordinary, non-persistent "filler" populations
