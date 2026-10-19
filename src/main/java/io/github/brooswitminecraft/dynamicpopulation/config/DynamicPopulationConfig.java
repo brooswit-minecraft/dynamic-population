@@ -85,11 +85,14 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue RECONCILIATION_INTERVAL_TICKS;
     private static final ModConfigSpec.IntValue PROMOTION_EMERALD_COST;
 
-    // MINECRAFT-425: a single flat decrement, applied exactly once at a population-owned entity's own
-    // death cell, regardless of death cause or faction -- replaces the former Fillager-only hazard/other
-    // split (fillager_unsafe_death_target_decrement / fillager_other_death_target_decrement), which is now
-    // a distinction without a difference since every actual death subtracts the same amount.
+    // MINECRAFT-425: a flat decrement, applied exactly once at a population-owned entity's own death cell,
+    // regardless of death cause -- replaces the former Fillager-only hazard/other split
+    // (fillager_unsafe_death_target_decrement / fillager_other_death_target_decrement), which is now a
+    // distinction without a difference since every ordinary-entity death subtracts the same amount.
+    // Two-tier by later user request: a King's death subtracts the separate, larger
+    // king_death_target_decrement instead, since a King is a far more significant population loss.
     private static final ModConfigSpec.IntValue POPULATION_DEATH_TARGET_DECREMENT;
+    private static final ModConfigSpec.IntValue KING_DEATH_TARGET_DECREMENT;
 
     // AC6 (MINECRAFT-30): village activity feedback. Each event type is its own independently-configurable
     // weight -- "raise" and "lower" magnitudes are never collapsed into a shared value, since e.g. trading
@@ -118,7 +121,8 @@ public final class DynamicPopulationConfig {
             int promotionEmeraldCost, int villageTradeTargetIncrement,
             int villageBreedingTargetIncrement, int villageBuildingTargetIncrement, int villageFarmingTargetIncrement,
             int villageGolemCreationTargetIncrement,
-            int villageDestructionTargetDecrement, int hudUpdateIntervalTicks, int populationDeathTargetDecrement) {
+            int villageDestructionTargetDecrement, int hudUpdateIntervalTicks, int populationDeathTargetDecrement,
+            int kingDeathTargetDecrement) {
         public Snapshot {
             if (!(weightDown >= MIN_WEIGHT) || !(weightSides >= MIN_WEIGHT) || !(weightUp >= MIN_WEIGHT)) {
                 throw new IllegalArgumentException("propagation direction weights must be > 0");
@@ -255,8 +259,10 @@ public final class DynamicPopulationConfig {
             .defineInRange("village_golem_creation_target_increment", 50, 1, 1000);
         VILLAGE_DESTRUCTION_TARGET_DECREMENT = BUILDER.comment("Village activity (AC6): ppt removed from each cell touched by an explosion's destroyed blocks (1..1000).")
             .defineInRange("village_destruction_target_decrement", 15, 1, 1000);
-        POPULATION_DEATH_TARGET_DECREMENT = BUILDER.comment("MINECRAFT-425: ppt removed from only the local cell, in the dying entity's own faction field, when any population-owned entity (a Fillager, a tagged Zombie/Skeleton filler, or any of the three Kings) actually, irreversibly dies -- applied exactly once per death, regardless of cause (1..1000). Replaces the former Fillager-only hazard/other-cause split.")
+        POPULATION_DEATH_TARGET_DECREMENT = BUILDER.comment("MINECRAFT-425: ppt removed from only the local cell, in the dying entity's own faction field, when an ordinary population-owned entity (a Fillager or a tagged Zombie/Skeleton filler) actually, irreversibly dies -- applied exactly once per death, regardless of cause (1..1000). Replaces the former Fillager-only hazard/other-cause split. Does NOT apply to a King's own death -- see king_death_target_decrement below.")
             .defineInRange("population_death_target_decrement", 25, 1, 1000);
+        KING_DEATH_TARGET_DECREMENT = BUILDER.comment("MINECRAFT-425: ppt removed from only the local cell, in the dying King's own faction field, when any of the three Kings actually, irreversibly dies -- applied exactly once per death, regardless of cause (1..1000). Separate from, and by default much larger than, population_death_target_decrement: a King's death is a far more significant population loss than an ordinary filler's.")
+            .defineInRange("king_death_target_decrement", 500, 1, 1000);
 
         HUD_UPDATE_INTERVAL_TICKS = BUILDER
             .comment(
@@ -297,7 +303,7 @@ public final class DynamicPopulationConfig {
             VILLAGE_TRADE_TARGET_INCREMENT.get(), VILLAGE_BREEDING_TARGET_INCREMENT.get(), VILLAGE_BUILDING_TARGET_INCREMENT.get(),
             VILLAGE_FARMING_TARGET_INCREMENT.get(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.get(),
             VILLAGE_DESTRUCTION_TARGET_DECREMENT.get(),
-            HUD_UPDATE_INTERVAL_TICKS.get(), POPULATION_DEATH_TARGET_DECREMENT.get());
+            HUD_UPDATE_INTERVAL_TICKS.get(), POPULATION_DEATH_TARGET_DECREMENT.get(), KING_DEATH_TARGET_DECREMENT.get());
     }
 
     private static Snapshot defaults() {
@@ -312,7 +318,7 @@ public final class DynamicPopulationConfig {
             VILLAGE_TRADE_TARGET_INCREMENT.getDefault(), VILLAGE_BREEDING_TARGET_INCREMENT.getDefault(), VILLAGE_BUILDING_TARGET_INCREMENT.getDefault(),
             VILLAGE_FARMING_TARGET_INCREMENT.getDefault(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.getDefault(),
             VILLAGE_DESTRUCTION_TARGET_DECREMENT.getDefault(),
-            HUD_UPDATE_INTERVAL_TICKS.getDefault(), POPULATION_DEATH_TARGET_DECREMENT.getDefault());
+            HUD_UPDATE_INTERVAL_TICKS.getDefault(), POPULATION_DEATH_TARGET_DECREMENT.getDefault(), KING_DEATH_TARGET_DECREMENT.getDefault());
     }
 
     /**

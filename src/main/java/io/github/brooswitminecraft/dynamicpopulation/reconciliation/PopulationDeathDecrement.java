@@ -7,7 +7,6 @@ import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.ToIntFunction;
 
-import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import io.github.brooswitminecraft.dynamicpopulation.king.KingDeathRetirement;
 import io.github.brooswitminecraft.dynamicpopulation.propagation.CellKey;
@@ -20,11 +19,16 @@ import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 
 /**
- * MINECRAFT-425: a single flat decrement (config {@code population_death_target_decrement}, default 25),
- * subtracted exactly once from a dying entity's OWN faction field at its DEATH-POSITION cell, for every
- * population-owned entity -- Fillager, a tagged Zombie/Skeleton filler, or any of the three Kings --
- * regardless of death cause. Replaces Fillager's former hazard/other-cause split (MINECRAFT-30, AC9), which
- * is now a distinction without a difference since every actual death applies the same amount.
+ * MINECRAFT-425: a flat decrement, subtracted exactly once from a dying entity's OWN faction field at its
+ * DEATH-POSITION cell, for every population-owned entity -- Fillager, a tagged Zombie/Skeleton filler, or
+ * any of the three Kings -- regardless of death cause. The AMOUNT is two-tier, by a later user request: an
+ * ordinary Fillager/tagged-filler death uses config {@code population_death_target_decrement} (default 25);
+ * a King death -- any of the three types -- uses the separate, larger config
+ * {@code king_death_target_decrement} (default 500), since a King is a far more significant population
+ * loss. Each entity type's own capture call site picks its own amount (see {@link Pending#decrement()}),
+ * never this class. Replaces Fillager's former hazard/other-cause split (MINECRAFT-30, AC9), which is now a
+ * distinction without a difference since every ordinary-entity death applies the same amount as every
+ * other.
  *
  * <p>Entity-type-specific code ({@code FillagerPopulationSimulation}, {@code FillerFactionSimulation},
  * {@code king.KingDeathHandling}) each call {@link #capture} from their own {@code LivingDeathEvent}
@@ -69,13 +73,14 @@ import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 public final class PopulationDeathDecrement {
     private PopulationDeathDecrement() { }
 
-    public record Pending(Faction faction, CellKey cell) { }
+    /** {@code decrement} is picked by the CAPTURING call site (ordinary vs. King amount), not applied here. */
+    public record Pending(Faction faction, CellKey cell, int decrement) { }
 
     private static final Map<UUID, Pending> PENDING = new HashMap<>();
 
     /** Called from each entity type's own {@code LivingDeathEvent} listener; never touches storage. */
-    public static void capture(UUID id, Faction faction, CellKey cell) {
-        PENDING.put(id, new Pending(faction, cell));
+    public static void capture(UUID id, Faction faction, CellKey cell, int decrement) {
+        PENDING.put(id, new Pending(faction, cell, decrement));
     }
 
     /** Removes and returns the pending death for {@code id}, if any -- never left dangling after this call. */
@@ -88,13 +93,13 @@ public final class PopulationDeathDecrement {
     }
 
     /**
-     * The pure apply step: a flat, single subtraction at the pending death's OWN cell, clamped the same way
-     * every other local-target adjustment in this package is (see
-     * {@link FillagerReconciliation#adjustLocalTarget}) -- floors at zero, never touches a neighbour.
+     * The pure apply step: a flat, single subtraction (the pending's OWN {@link Pending#decrement()},
+     * picked by the capturing call site) at the pending death's OWN cell, clamped the same way every other
+     * local-target adjustment in this package is (see {@link FillagerReconciliation#adjustLocalTarget}) --
+     * floors at zero, never touches a neighbour.
      */
-    public static void apply(Pending pending, int decrement, ToIntFunction<CellKey> read,
-            BiConsumer<CellKey, Integer> write) {
-        FillagerReconciliation.adjustLocalTarget(pending.cell(), -decrement, read, write);
+    public static void apply(Pending pending, ToIntFunction<CellKey> read, BiConsumer<CellKey, Integer> write) {
+        FillagerReconciliation.adjustLocalTarget(pending.cell(), -pending.decrement(), read, write);
     }
 
     /**
@@ -125,7 +130,7 @@ public final class PopulationDeathDecrement {
             return;
         }
         LevelField field = PopulationSimulation.field((ServerLevel) event.getLevel(), pending.get().faction());
-        apply(pending.get(), DynamicPopulationConfig.get().populationDeathTargetDecrement(), field::get, field::set);
+        apply(pending.get(), field::get, field::set);
     }
 
     @SubscribeEvent

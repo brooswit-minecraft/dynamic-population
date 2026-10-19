@@ -77,10 +77,28 @@ public final class FillerFactionSimulation {
      * {@link #isFiller} for eligibility, so a King (never tagged) or a filler that has since become
      * persistent (named/leashed) is excluded exactly the same way reconciliation itself already excludes
      * them. Never touches storage directly: see {@code PopulationDeathDecrement}'s own class doc.
+     *
+     * <p><b>Review fix (round 2): this handler must only ever touch {@code PopulationDeathDecrement}'s
+     * shared pending map for an entity it could plausibly OWN.</b> {@code LivingDeathEvent} is a single
+     * global NeoForge event: EVERY registered {@code onLivingDeath} listener on the event bus -- this one,
+     * {@code FillagerPopulationSimulation}'s, and {@code king.KingDeathHandling}'s -- runs for EVERY dying
+     * entity, not just the ones each class cares about, since {@code Fillager} and the three King entity
+     * classes are ALSO {@code Mob} instances. An earlier version of the round-1 fix called {@code take()}
+     * unconditionally for any {@code Mob}, which (since this class is registered AFTER both of those in
+     * {@code DynamicPopulationMod}) erased the Fillager's or King's OWN valid, same-event capture before
+     * this class's own ownership check (an untagged Fillager/King always fails {@link #isFiller} for every
+     * {@link Spec}) could run -- a real bug, not a hypothetical one, since every Fillager/King death would
+     * then silently decrement nothing. {@link #ownsAnyFillerTag} is the fix: {@code take()} now only runs
+     * when the dying entity carries (or ever carried) one of THIS class's own {@code FillerMarkers} tags,
+     * which a Fillager or King never does (see {@code FillerMarkers}' own class doc) -- so this handler is
+     * now a complete no-op, start to finish, for any entity it does not own.
      */
     @SubscribeEvent
     public static void onLivingDeath(LivingDeathEvent event) {
         if (!(event.getEntity() instanceof Mob mob) || !(mob.level() instanceof ServerLevel level)) {
+            return;
+        }
+        if (!ownsAnyFillerTag(mob.getTags())) {
             return;
         }
         // Review fix (round 1): discard any stale pending capture from an earlier, CANCELLED death attempt
@@ -93,10 +111,28 @@ public final class FillerFactionSimulation {
         for (Spec spec : SPECS) {
             if (isFiller(mob, spec)) {
                 LevelField field = PopulationSimulation.field(level, spec.faction());
-                PopulationDeathDecrement.capture(mob.getUUID(), spec.faction(), field.cellAt(mob.blockPosition()));
+                PopulationDeathDecrement.capture(mob.getUUID(), spec.faction(), field.cellAt(mob.blockPosition()),
+                    DynamicPopulationConfig.get().populationDeathTargetDecrement());
                 return;
             }
         }
+    }
+
+    /**
+     * Pure (no Minecraft registry needed): whether {@code tags} carries ANY tag this class ever captures or
+     * invalidates a pending death for -- i.e. whether this {@code onLivingDeath} listener may plausibly OWN
+     * the dying entity's pending state at all. Tags are scoreboard tags, added once at spawn and never
+     * removed by a later persistence change (see {@link #isFiller}'s own doc), so this check is unaffected
+     * by whether the entity is CURRENTLY eligible -- only by whether it was EVER one of this class's own
+     * tagged fillers.
+     */
+    static boolean ownsAnyFillerTag(java.util.Collection<String> tags) {
+        for (Spec spec : SPECS) {
+            if (tags.contains(spec.tag())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void reconcile(ServerLevel level, Spec spec, DynamicPopulationConfig.Snapshot config) {

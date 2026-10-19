@@ -140,6 +140,7 @@ public final class FillagerPopulationSimulation {
         PopulationDeathDecrement.take(fillager.getUUID());
         LevelField field = PopulationSimulation.field(level);
         CellKey localCell = field.cellAt(fillager.blockPosition());
-        PopulationDeathDecrement.capture(fillager.getUUID(), Faction.VILLAGER, localCell);
+        PopulationDeathDecrement.capture(fillager.getUUID(), Faction.VILLAGER, localCell,
+            DynamicPopulationConfig.get().populationDeathTargetDecrement());
     }
 }

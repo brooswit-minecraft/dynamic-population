@@ -111,9 +111,10 @@ and retires that King's `KingRecord.Entry` so `KingEntitySync` can never
 resurrect it and registry-driven seeding stops reading from a dead source.
 This retirement/announcement path itself is unchanged by MINECRAFT-425
 (added below), which separately subtracts a flat
-`population_death_target_decrement` (default 25) from the King's own
-faction field at its death cell -- the same single-decrement-per-death
-treatment every population-owned entity now gets. This listens on
+`king_death_target_decrement` (default 500 -- deliberately much larger
+than the ordinary `population_death_target_decrement`, default 25, since a
+King is a far more significant population loss) from the King's own
+faction field at its death cell. This listens on
 `EntityLeaveLevelEvent` (not the earlier, cancellable `LivingDeathEvent` --
 see `KingDeathHandling`'s own javadoc for the P1 review fix and why) and
 only treats it as a genuine death when `entity.getRemovalReason() == KILLED`,
@@ -436,15 +437,19 @@ treated identically regardless of cause.
 ## Population death decrement (MINECRAFT-425)
 
 Every population-owned entity -- a Fillager, a tagged Zombie/Skeleton
-filler, or any of the three Kings -- subtracts a single flat
-`population_death_target_decrement` (default 25, on the same 0..1000 scale,
-floored at zero) from its OWN faction's field at its ACTUAL death-position
-cell (not its spawn cell), exactly once per actual death, regardless of
-cause. This replaced Fillager's former two-value hazard/other-cause split
+filler, or any of the three Kings -- subtracts a flat decrement from its OWN
+faction's field at its ACTUAL death-position cell (not its spawn cell),
+exactly once per actual death, regardless of cause, on the same 0..1000
+scale, floored at zero. The amount is TWO-TIER, by a later user request: an
+ordinary Fillager/filler death uses `population_death_target_decrement`
+(default 25); a King's death -- any of the three types -- uses the
+separate, much larger `king_death_target_decrement` (default 500), since a
+King is a far more significant population loss. This replaced Fillager's
+former two-value hazard/other-cause split
 (`fillager_unsafe_death_target_decrement` / `fillager_other_death_target_decrement`,
 MINECRAFT-30's AC9/AC6) -- a distinction without a difference once every
-death applies the same amount -- and is the first per-death decrement either
-filler faction or any King has ever had.
+ordinary death applies the same amount -- and is the first per-death
+decrement either filler faction or any King has ever had.
 
 Implementation (`reconciliation.PopulationDeathDecrement`, used by all five
 entity-specific `LivingDeathEvent` listeners): the OWN entity's
@@ -452,7 +457,9 @@ entity-specific `LivingDeathEvent` listeners): the OWN entity's
 exactly the reasoning "King death" above already documents -- is the only
 correct place to read the actual death-cell position, since it fires before
 any death-animation movement; that handler only ever remembers an in-memory
-(faction, cell) pending tuple keyed by the entity's UUID, never storage.
+(faction, cell, decrement) pending tuple keyed by the entity's UUID, never
+storage -- the decrement amount itself is picked by the CAPTURING call site
+(ordinary vs. King), never by `PopulationDeathDecrement` itself.
 `PopulationDeathDecrement`'s own `EntityLeaveLevelEvent` listener is what
 actually applies it, gated on the same confirmed-`KILLED`-removal signal
 "King death" uses, so: a cancelled death never reaches that removal (the
@@ -461,6 +468,32 @@ ordinary reconciliation discard/despawn and promotion/conversion use
 `discard()` and never fire `LivingDeathEvent` at all; and a confirmed death
 consumes (removes) its pending entry, so a hypothetical repeated callback
 for the same death can never apply it twice.
+
+Two review-round-1 correctness fixes, both load-bearing: (1) the
+`EntityLeaveLevelEvent` listener checks `event.getLevel() instanceof
+ServerLevel` BEFORE ever touching the shared pending map, never after --
+in an integrated client+server JVM (singleplayer), a client-side leave
+event for the same UUID could otherwise reach it first and silently consume
+(losing) the real, server-captured pending death. (2) every entity-type
+`onLivingDeath` listener unconditionally discards (`take()`s) any existing
+pending entry FIRST, before conditionally recapturing only if THIS death
+attempt is itself currently eligible -- without this, a tagged filler whose
+death was cancelled at cell A (capturing it), then became persistence-
+required (no longer eligible) before genuinely dying at cell B, would skip
+recapturing (ineligible) while the stale A-entry survived to be wrongly
+applied by the real death.
+
+A review-round-2 correctness fix, also load-bearing: `LivingDeathEvent` is
+a single global NeoForge event, so EVERY registered `onLivingDeath`
+listener (this feature's three: Fillager's, the filler factions', and the
+Kings') runs for EVERY dying entity, not just the ones each class cares
+about, since `Fillager` and the three King entity classes are ALSO `Mob`
+instances. `FillerFactionSimulation.onLivingDeath` must therefore never
+touch the shared pending map for an entity it does not own (i.e. one that
+never carries one of its own `FillerMarkers` tags) -- an earlier version
+called `take()` unconditionally for any `Mob`, which (since that class
+registers after the other two) erased the Fillager's or King's own valid,
+same-event capture before it could be applied.
 
 ## Independent light/sun-burn override at density > 250 (MINECRAFT-390)
 

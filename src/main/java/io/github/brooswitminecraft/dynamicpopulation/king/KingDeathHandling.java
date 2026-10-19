@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicpopulation.king;
 
+import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.entity.SkeletonKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.VillagerKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.ZombieKingEntity;
@@ -74,7 +75,8 @@ public final class KingDeathHandling {
         // reopen that staleness window.
         PopulationDeathDecrement.take(entity.getUUID());
         LevelField field = PopulationSimulation.field(level, faction);
-        PopulationDeathDecrement.capture(entity.getUUID(), faction, field.cellAt(entity.blockPosition()));
+        PopulationDeathDecrement.capture(entity.getUUID(), faction, field.cellAt(entity.blockPosition()),
+            DynamicPopulationConfig.get().kingDeathTargetDecrement());
     }
 
     @SubscribeEvent

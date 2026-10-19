@@ -85,6 +85,20 @@ def boot(root):
         lines.put(None)
 
     threading.Thread(target=read_output, daemon=True).start()
+
+    def drain_for(seconds):
+        end = time.monotonic() + seconds
+        captured = []
+        while time.monotonic() < end:
+            try:
+                line = lines.get(timeout=max(0.01, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if line is None:
+                raise RuntimeError("Server exited during a wait window")
+            captured.append(line)
+        return captured
+
     try:
         deadline = time.monotonic() + 300
         mod_loaded = False
@@ -189,6 +203,87 @@ def boot(root):
         assert settled_factions == {"VILLAGER", "ZOMBIE", "SKELETON"}
         print("Verified /dpop king settle creates real King entities for every faction", flush=True)
 
+        # MINECRAFT-425 (reviewer-requested real handler-composition regression): LivingDeathEvent is a
+        # single global NeoForge event -- every registered onLivingDeath listener (FillagerPopulationSimulation's,
+        # FillerFactionSimulation's, king.KingDeathHandling's) runs for EVERY dying entity, not just the ones
+        # each class cares about, since Fillager and the three King entity classes are ALSO Mob instances. An
+        # earlier version of this change had FillerFactionSimulation's listener call
+        # PopulationDeathDecrement.take() unconditionally for any Mob, which (registration order matters --
+        # it runs after both of the others) erased the Fillager's/King's own valid same-event capture before
+        # this real death's confirmed removal could apply it -- a real source-proven regression a pure-logic
+        # JUnit test cannot reach, since it needs the real global event bus with all production listeners
+        # registered, and real entity classes. This drives each of the four already-summoned, already-tagged
+        # entities above (the Fillager, and all three Kings) through an actual death and asserts its own
+        # faction's field dropped by EXACTLY the right configured decrement at its own death cell -- proving
+        # no other handler's capture/consume silently ate it. A 1000 ppt baseline (not 500) is used for
+        # every entity here, specifically so a King's much larger king_death_target_decrement (default 500)
+        # still leaves an unambiguous, clearly-non-zero remainder (500, not floored to 0) -- the same
+        # baseline also still cleanly distinguishes the Fillager/filler's smaller
+        # population_death_target_decrement (default 25) landing at 975 from either a no-op (1000) or a
+        # wrong-amount decrement.
+        def read_entity_position(tag):
+            process.stdin.write(f'data get entity @e[tag={tag},limit=1] Pos\n')
+            process.stdin.flush()
+            for line in drain_for(2):
+                if 'entity data:' not in line or '[' not in line:
+                    continue
+                bracket = line.split('[', 1)[1].split(']', 1)[0]
+                try:
+                    return [float(part.strip().rstrip('d')) for part in bracket.split(',')]
+                except ValueError:
+                    continue
+            return None
+
+        def density_at(pos, faction_label, expect_ppt):
+            # The /dpop command literal is lowercase ("villager"/"zombie"/"skeleton"), but its own output
+            # echoes the Java Faction enum's name() verbatim, which is uppercase ("[VILLAGER] cell ...").
+            x, y, z = pos
+            process.stdin.write(f'execute positioned {x} {y} {z} run dpop show {faction_label.lower()}\n')
+            process.stdin.flush()
+            for line in drain_for(2):
+                if f"[{faction_label}] cell" in line and f"= {expect_ppt} ppt" in line:
+                    return True
+            return False
+
+        death_decrement_checks = [
+            ("dpop_smoke", "VILLAGER", "the Fillager", 975),
+            ("dpop_smoke_vk", "VILLAGER", "the Villager King", 500),
+            ("dpop_smoke_zk", "ZOMBIE", "the Zombie King", 500),
+            ("dpop_smoke_sk", "SKELETON", "the Skeleton King", 500),
+        ]
+        for tag, faction_label, description, expect_after_death in death_decrement_checks:
+            process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set {faction_label.lower()} 1000\n')
+            process.stdin.flush()
+            pos = read_entity_position(tag)
+            if pos is None:
+                raise RuntimeError(f"MINECRAFT-425 death-decrement check: could not read {description}'s position")
+            if not density_at(pos, faction_label, 1000):
+                raise RuntimeError(
+                    f"MINECRAFT-425 death-decrement check: baseline 1000 ppt not confirmed at {description}'s "
+                    f"own cell before killing it -- see captured output above."
+                )
+            process.stdin.write(f'kill @e[tag={tag}]\n')
+            process.stdin.flush()
+            # Confirmed-KILLED removal fires via LivingEntity#tickDeath ~20 ticks (~1s) after an uncancelled
+            # LivingDeathEvent, never before (see king.KingDeathHandling's own doc) -- wait past that with
+            # margin before reading the field back.
+            drain_for(3)
+            if not density_at(pos, faction_label, expect_after_death):
+                raise RuntimeError(
+                    f"MINECRAFT-425 death-decrement check FAILED: {description}'s own death did not "
+                    f"decrement {faction_label} to exactly {expect_after_death} ppt at its own death cell -- "
+                    f"this would indicate another onLivingDeath listener's pending capture/consume silently "
+                    f"ate (or never recorded) this one, or applied the wrong amount, see "
+                    f"PopulationDeathDecrement's own class doc."
+                )
+        print(
+            "Verified real handler-composition: the Fillager decremented by exactly "
+            "population_death_target_decrement (25) and all three Kings each decremented by exactly "
+            "king_death_target_decrement (500), each at its own death cell, with no other onLivingDeath "
+            "listener clobbering another's capture.",
+            flush=True,
+        )
+
         # MINECRAFT-390 (reviewer-requested acceptance evidence): a REAL multi-tick battle, not just a
         # pure-logic unit test. Force both factions' local density to >=500 at a fixed position (the same
         # existing debug-seed command the ticket documents, now faction-aware -- see PopulationCommands),
@@ -238,19 +333,6 @@ def boot(root):
                 "1000 ppt at the battle position -- the chunk may still not have been loaded in time for "
                 "/dpop set to take effect; see captured output above."
             )
-
-        def drain_for(seconds):
-            end = time.monotonic() + seconds
-            captured = []
-            while time.monotonic() < end:
-                try:
-                    line = lines.get(timeout=max(0.01, end - time.monotonic()))
-                except queue.Empty:
-                    break
-                if line is None:
-                    raise RuntimeError("Server exited during a wait window")
-                captured.append(line)
-            return captured
 
         def query_health_unambiguous(tag, descriptor_substring):
             """Query one tagged entity's Health and return the parsed float from THIS SPECIFIC query's
