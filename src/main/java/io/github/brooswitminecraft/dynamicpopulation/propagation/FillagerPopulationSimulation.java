@@ -9,6 +9,7 @@ import io.github.brooswitminecraft.dynamicpopulation.entity.DynamicPopulationEnt
 import io.github.brooswitminecraft.dynamicpopulation.entity.Fillager;
 import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
 import io.github.brooswitminecraft.dynamicpopulation.reconciliation.FillagerReconciliation;
+import io.github.brooswitminecraft.dynamicpopulation.reconciliation.PopulationDeathDecrement;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
@@ -119,73 +120,27 @@ public final class FillagerPopulationSimulation {
             || state.is(Blocks.SWEET_BERRY_BUSH) || state.is(Blocks.WITHER_ROSE);
     }
 
+    /**
+     * MINECRAFT-425: capture the Fillager's actual death-position cell now -- before any death-animation
+     * movement, and well before the entity's confirmed, irreversible removal -- for
+     * {@code PopulationDeathDecrement} to apply (once, only if this death is never cancelled) via its own
+     * {@code EntityLeaveLevelEvent} listener. This method itself never touches storage: see
+     * {@code PopulationDeathDecrement}'s own class doc for why a cancellable {@code LivingDeathEvent} must
+     * never write directly.
+     */
     @SubscribeEvent
     public static void onLivingDeath(LivingDeathEvent event) {
         if (!(event.getEntity() instanceof Fillager fillager) || !(fillager.level() instanceof ServerLevel level)) {
             return;
         }
+        // Review fix (round 1): discard any stale pending capture from an earlier, cancelled death attempt
+        // first -- see PopulationDeathDecrement's own class doc. A Fillager's eligibility never itself
+        // flips (unlike a tagged filler's), but every onLivingDeath listener does this uniformly so no
+        // future change here can silently reopen that staleness window.
+        PopulationDeathDecrement.take(fillager.getUUID());
         LevelField field = PopulationSimulation.field(level);
         CellKey localCell = field.cellAt(fillager.blockPosition());
-        var config = DynamicPopulationConfig.get();
-        boolean unsafe = isUnsafeDeath(fillager, event.getSource());
-        if (unsafe) {
-            FillagerReconciliation.applyUnsafeDeathIfUnsafe(true, localCell, field::get, field::set,
-                config.unsafeDeathTargetDecrement());
-        } else {
-            // AC6 (MINECRAFT-30): every Fillager death DPOP-7's unsafe-location case doesn't already cover
-            // (killed by a player or mob, for example) is still a negative village-activity signal, just a
-            // weaker/independently-configurable one than a genuine local hazard.
-            FillagerReconciliation.adjustLocalTarget(localCell, -config.fillagerOtherDeathTargetDecrement(),
-                field::get, field::set);
-        }
+        PopulationDeathDecrement.capture(fillager.getUUID(), Faction.VILLAGER, localCell,
+            DynamicPopulationConfig.get().populationDeathTargetDecrement());
     }
-
-    /**
-     * AC9 unsafe-death classification. {@code Fillager.wasUnsafeLocationDeath()} covers every hazard that is
-     * identified by WHERE the Fillager is standing (lava/fire/soul-fire, and wither rose, all checked by
-     * location in {@code Fillager.aiStep}) -- that is the only correct way to classify wither rose, since
-     * the actual kill comes from a delayed Wither status-effect tick whose {@code DamageType} ({@code
-     * DamageTypes.WITHER}) is indistinguishable from the same effect applied by a wither skeleton or the
-     * Wither boss; classifying by damage type there would misattribute an ordinary mob kill as a
-     * local-cell hazard death. Drowning and in-wall suffocation have no feet-block equivalent at all (no
-     * single block identifies them), so those two are classified by their real {@code DamageType} registry
-     * key instead (stable; {@code msgId} is not -- e.g. {@code DamageTypes.CAMPFIRE} and {@code
-     * DamageTypes.IN_FIRE} share the msgId "inFire", which is why registry key and not msgId is used here).
-     * {@link #isUnsafeDeathTypePath} is the pure, unit-tested half of this; it never receives storage.
-     */
-    private static boolean isUnsafeDeath(Fillager fillager, net.minecraft.world.damagesource.DamageSource source) {
-        boolean hasAttacker = source.getEntity() != null;
-        String damageTypePath = source.typeHolder().unwrapKey().map(key -> key.location().getPath()).orElse("");
-        return isUnsafeDeath(fillager.wasUnsafeLocationDeath(), hasAttacker, damageTypePath);
-    }
-
-    /**
-     * The pure, unit-tested half of {@link #isUnsafeDeath}: no Minecraft registry or entity needed to test
-     * this. {@code locationUnsafe && !hasAttacker} is required, not {@code locationUnsafe} alone: wither
-     * rose is a hazard the Fillager can survive, so a player/mob kill landing while it happens to be
-     * standing on one must not count -- genuine location hazards never have an attacking entity (lava/fire's
-     * self-kill uses {@code damageSources().generic()}; the wither-rose kill arrives as the Wither effect's
-     * own source), while a player, mob, or projectile kill always does.
-     */
-    static boolean isUnsafeDeath(boolean locationUnsafe, boolean hasAttacker, String damageTypePath) {
-        if (locationUnsafe && !hasAttacker) {
-            return true;
-        }
-        return isUnsafeDeathTypePath(damageTypePath);
-    }
-
-    /** The registry-key path half of {@link #isUnsafeDeath}: no Minecraft registry needed to unit test this. */
-    static boolean isUnsafeDeathTypePath(String damageTypePath) {
-        return UNSAFE_DEATH_TYPE_PATHS.contains(damageTypePath);
-    }
-
-    // Wither rose and on-fire are deliberately NOT here. Wither rose is classified by location in
-    // Fillager.aiStep (see wasUnsafeLocationDeath) instead, because DamageTypes.WITHER cannot distinguish
-    // "stood on a wither rose" from "a wither skeleton or the Wither boss killed this mob". "on_fire" is the
-    // burning status damage-over-time tick, dealt regardless of what ignited the Fillager (a Flame bow,
-    // Fire Aspect, a blaze/ghast fireball, lightning) -- not a location at all; the location causes of
-    // burning (lava, fire, soul fire) are already covered by wasUnsafeLocationDeath, which kills the
-    // Fillager the same tick via Fillager.isLethalHazard before any on_fire damage-over-time tick can fire.
-    private static final Set<String> UNSAFE_DEATH_TYPE_PATHS = Set.of(
-        "lava", "in_fire", "hot_floor", "campfire", "cactus", "sweet_berry_bush", "drown", "in_wall");
 }

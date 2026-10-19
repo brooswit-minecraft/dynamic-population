@@ -80,8 +80,16 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue SPAWN_CAP_PER_INTERVAL;
     private static final ModConfigSpec.IntValue DESPAWN_CAP_PER_INTERVAL;
     private static final ModConfigSpec.IntValue RECONCILIATION_INTERVAL_TICKS;
-    private static final ModConfigSpec.IntValue UNSAFE_DEATH_TARGET_DECREMENT;
     private static final ModConfigSpec.IntValue PROMOTION_EMERALD_COST;
+
+    // MINECRAFT-425: a flat decrement, applied exactly once at a population-owned entity's own death cell,
+    // regardless of death cause -- replaces the former Fillager-only hazard/other split
+    // (fillager_unsafe_death_target_decrement / fillager_other_death_target_decrement), which is now a
+    // distinction without a difference since every ordinary-entity death subtracts the same amount.
+    // Two-tier by later user request: a King's death subtracts the separate, larger
+    // king_death_target_decrement instead, since a King is a far more significant population loss.
+    private static final ModConfigSpec.IntValue POPULATION_DEATH_TARGET_DECREMENT;
+    private static final ModConfigSpec.IntValue KING_DEATH_TARGET_DECREMENT;
 
     // AC6 (MINECRAFT-30): village activity feedback. Each event type is its own independently-configurable
     // weight -- "raise" and "lower" magnitudes are never collapsed into a shared value, since e.g. trading
@@ -92,7 +100,6 @@ public final class DynamicPopulationConfig {
     private static final ModConfigSpec.IntValue VILLAGE_BUILDING_TARGET_INCREMENT;
     private static final ModConfigSpec.IntValue VILLAGE_FARMING_TARGET_INCREMENT;
     private static final ModConfigSpec.IntValue VILLAGE_GOLEM_CREATION_TARGET_INCREMENT;
-    private static final ModConfigSpec.IntValue FILLAGER_OTHER_DEATH_TARGET_DECREMENT;
     private static final ModConfigSpec.IntValue VILLAGE_DESTRUCTION_TARGET_DECREMENT;
 
     // MINECRAFT-417: debug population HUD.
@@ -107,10 +114,11 @@ public final class DynamicPopulationConfig {
             int kingNaturalFoundingIntervalTicks, int kingNaturalFoundingChanceDenominator, int samplingHorizontalRadius,
             int samplingVerticalRadius, int fillagersPerFullCell, int reconciliationRefillPerInterval,
             int spawnCapPerInterval, int despawnCapPerInterval, int reconciliationIntervalTicks,
-            int unsafeDeathTargetDecrement, int promotionEmeraldCost, int villageTradeTargetIncrement,
+            int promotionEmeraldCost, int villageTradeTargetIncrement,
             int villageBreedingTargetIncrement, int villageBuildingTargetIncrement, int villageFarmingTargetIncrement,
-            int villageGolemCreationTargetIncrement, int fillagerOtherDeathTargetDecrement,
-            int villageDestructionTargetDecrement, int hudUpdateIntervalTicks) {
+            int villageGolemCreationTargetIncrement,
+            int villageDestructionTargetDecrement, int hudUpdateIntervalTicks, int populationDeathTargetDecrement,
+            int kingDeathTargetDecrement) {
         public Snapshot {
             if (!(weightDown >= MIN_WEIGHT) || !(weightSides >= MIN_WEIGHT) || !(weightUp >= MIN_WEIGHT)) {
                 throw new IllegalArgumentException("propagation direction weights must be > 0");
@@ -210,9 +218,6 @@ public final class DynamicPopulationConfig {
             .defineInRange("fillager_despawn_cap_per_interval", 2, 1, 64);
         RECONCILIATION_INTERVAL_TICKS = BUILDER.comment("Fillager reconciliation: server ticks between sampled spawn/despawn decisions (1..1200).")
             .defineInRange("fillager_reconciliation_interval_ticks", 40, 1, 1200);
-        UNSAFE_DEATH_TARGET_DECREMENT = BUILDER.comment("Fillager reconciliation: ppt removed from only the local cell when a Fillager dies at an unsafe location (1..1000).")
-            .defineInRange("fillager_unsafe_death_target_decrement", 25, 1, 1000);
-
         PROMOTION_EMERALD_COST = BUILDER
             .comment(
                 "Promotion economy: emeralds a player must give a Fillager to promote it to a normal, permanent "
@@ -231,10 +236,12 @@ public final class DynamicPopulationConfig {
             .defineInRange("village_farming_target_increment", 3, 1, 1000);
         VILLAGE_GOLEM_CREATION_TARGET_INCREMENT = BUILDER.comment("Village activity (AC6): ppt added to only the local cell when an Iron Golem is freshly created (built, not loaded from disk) (1..1000). Golem creation is rare, so this is deliberately large.")
             .defineInRange("village_golem_creation_target_increment", 50, 1, 1000);
-        FILLAGER_OTHER_DEATH_TARGET_DECREMENT = BUILDER.comment("Village activity (AC6): ppt removed from only the local cell when a Fillager dies for a reason OTHER than the unsafe-location case already covered by fillager_unsafe_death_target_decrement (e.g. killed by a player or mob). Independently configurable since an unsafe-location death is a stronger, more specific local-danger signal (1..1000).")
-            .defineInRange("fillager_other_death_target_decrement", 10, 1, 1000);
         VILLAGE_DESTRUCTION_TARGET_DECREMENT = BUILDER.comment("Village activity (AC6): ppt removed from each cell touched by an explosion's destroyed blocks (1..1000).")
             .defineInRange("village_destruction_target_decrement", 15, 1, 1000);
+        POPULATION_DEATH_TARGET_DECREMENT = BUILDER.comment("MINECRAFT-425: ppt removed from only the local cell, in the dying entity's own faction field, when an ordinary population-owned entity (a Fillager or a tagged Zombie/Skeleton filler) actually, irreversibly dies -- applied exactly once per death, regardless of cause (1..1000). Replaces the former Fillager-only hazard/other-cause split. Does NOT apply to a King's own death -- see king_death_target_decrement below.")
+            .defineInRange("population_death_target_decrement", 25, 1, 1000);
+        KING_DEATH_TARGET_DECREMENT = BUILDER.comment("MINECRAFT-425: ppt removed from only the local cell, in the dying King's own faction field, when any of the three Kings actually, irreversibly dies -- applied exactly once per death, regardless of cause (1..1000). Separate from, and by default much larger than, population_death_target_decrement: a King's death is a far more significant population loss than an ordinary filler's.")
+            .defineInRange("king_death_target_decrement", 500, 1, 1000);
 
         HUD_UPDATE_INTERVAL_TICKS = BUILDER
             .comment(
@@ -270,11 +277,11 @@ public final class DynamicPopulationConfig {
             SPREAD_FRACTION.get(), STEP_INTERVAL_TICKS.get(), TRAVERSABLE_SAMPLE_SPACING.get(),
             KING_SEED_RADIUS_CELLS.get(), KING_SEED_RATE_PPT.get(), KING_SEED_INTERVAL_TICKS.get(),
             KING_NATURAL_FOUNDING_INTERVAL_TICKS.get(), KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR.get(),
-            SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), UNSAFE_DEATH_TARGET_DECREMENT.get(), PROMOTION_EMERALD_COST.get(),
+            SAMPLING_HORIZONTAL_RADIUS.get(), SAMPLING_VERTICAL_RADIUS.get(), FILLAGERS_PER_FULL_CELL.get(), RECONCILIATION_REFILL_PER_INTERVAL.get(), SPAWN_CAP_PER_INTERVAL.get(), DESPAWN_CAP_PER_INTERVAL.get(), RECONCILIATION_INTERVAL_TICKS.get(), PROMOTION_EMERALD_COST.get(),
             VILLAGE_TRADE_TARGET_INCREMENT.get(), VILLAGE_BREEDING_TARGET_INCREMENT.get(), VILLAGE_BUILDING_TARGET_INCREMENT.get(),
             VILLAGE_FARMING_TARGET_INCREMENT.get(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.get(),
-            FILLAGER_OTHER_DEATH_TARGET_DECREMENT.get(), VILLAGE_DESTRUCTION_TARGET_DECREMENT.get(),
-            HUD_UPDATE_INTERVAL_TICKS.get());
+            VILLAGE_DESTRUCTION_TARGET_DECREMENT.get(),
+            HUD_UPDATE_INTERVAL_TICKS.get(), POPULATION_DEATH_TARGET_DECREMENT.get(), KING_DEATH_TARGET_DECREMENT.get());
     }
 
     private static Snapshot defaults() {
@@ -284,11 +291,11 @@ public final class DynamicPopulationConfig {
             KING_SEED_RADIUS_CELLS.getDefault(),
             KING_SEED_RATE_PPT.getDefault(), KING_SEED_INTERVAL_TICKS.getDefault(),
             KING_NATURAL_FOUNDING_INTERVAL_TICKS.getDefault(), KING_NATURAL_FOUNDING_CHANCE_DENOMINATOR.getDefault(),
-            SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), UNSAFE_DEATH_TARGET_DECREMENT.getDefault(), PROMOTION_EMERALD_COST.getDefault(),
+            SAMPLING_HORIZONTAL_RADIUS.getDefault(), SAMPLING_VERTICAL_RADIUS.getDefault(), FILLAGERS_PER_FULL_CELL.getDefault(), RECONCILIATION_REFILL_PER_INTERVAL.getDefault(), SPAWN_CAP_PER_INTERVAL.getDefault(), DESPAWN_CAP_PER_INTERVAL.getDefault(), RECONCILIATION_INTERVAL_TICKS.getDefault(), PROMOTION_EMERALD_COST.getDefault(),
             VILLAGE_TRADE_TARGET_INCREMENT.getDefault(), VILLAGE_BREEDING_TARGET_INCREMENT.getDefault(), VILLAGE_BUILDING_TARGET_INCREMENT.getDefault(),
             VILLAGE_FARMING_TARGET_INCREMENT.getDefault(), VILLAGE_GOLEM_CREATION_TARGET_INCREMENT.getDefault(),
-            FILLAGER_OTHER_DEATH_TARGET_DECREMENT.getDefault(), VILLAGE_DESTRUCTION_TARGET_DECREMENT.getDefault(),
-            HUD_UPDATE_INTERVAL_TICKS.getDefault());
+            VILLAGE_DESTRUCTION_TARGET_DECREMENT.getDefault(),
+            HUD_UPDATE_INTERVAL_TICKS.getDefault(), POPULATION_DEATH_TARGET_DECREMENT.getDefault(), KING_DEATH_TARGET_DECREMENT.getDefault());
     }
 
     /**

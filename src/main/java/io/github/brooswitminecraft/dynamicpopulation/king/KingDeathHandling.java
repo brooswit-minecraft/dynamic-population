@@ -1,21 +1,29 @@
 package io.github.brooswitminecraft.dynamicpopulation.king;
 
+import io.github.brooswitminecraft.dynamicpopulation.config.DynamicPopulationConfig;
 import io.github.brooswitminecraft.dynamicpopulation.entity.SkeletonKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.VillagerKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.entity.ZombieKingEntity;
 import io.github.brooswitminecraft.dynamicpopulation.faction.Faction;
+import io.github.brooswitminecraft.dynamicpopulation.propagation.LevelField;
+import io.github.brooswitminecraft.dynamicpopulation.propagation.PopulationSimulation;
+import io.github.brooswitminecraft.dynamicpopulation.reconciliation.PopulationDeathDecrement;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 
 /**
  * MINECRAFT-414: on an ACTUAL, CONFIRMED-IRREVERSIBLE King death (any faction, naturally founded OR
  * command-settled via {@link KingManager#settle}), announce it (type-only, no location, matching
  * {@link NaturalFounding#deathAnnouncementText}) and retire its {@link KingRecord.Entry} so
  * {@link KingEntitySync} can never resurrect it and registry-driven seeding stops reading from a dead
- * source. Deliberately narrow: this does NOT touch the faction's population density field at all (only
- * the King's own source/registry record), and does NOT add any King-vs-King hostility/targeting behavior
+ * source. This retirement/announcement path itself still does NOT touch the faction's population density
+ * field (only the King's own source/registry record) -- {@link #onLivingDeath} below is a SEPARATE,
+ * independently-dedup'd capture for {@link PopulationDeathDecrement} (MINECRAFT-425), which is what makes a
+ * King's death also subtract the flat population_death_target_decrement from its own faction field at its
+ * death cell, the same as a Fillager's or filler's. This class does NOT add any King-vs-King hostility/targeting behavior
  * -- that is explicitly a separate follow-up, out of scope here.
  *
  * <p><b>[P1 review fix] Why {@link EntityLeaveLevelEvent}, not {@code LivingDeathEvent}:</b> the earlier
@@ -45,6 +53,31 @@ import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
  */
 public final class KingDeathHandling {
     private KingDeathHandling() { }
+
+    /**
+     * MINECRAFT-425: capture a King's actual death-position cell now -- before any death-animation
+     * movement -- for {@code PopulationDeathDecrement} to apply (once, only if this death is never
+     * cancelled) via its own {@code EntityLeaveLevelEvent} listener, independently of this class's own
+     * {@link #onEntityLeaveLevel} source-retirement/announcement logic below. Never touches storage
+     * directly: see {@code PopulationDeathDecrement}'s own class doc for why a cancellable
+     * {@code LivingDeathEvent} must not.
+     */
+    @SubscribeEvent
+    public static void onLivingDeath(LivingDeathEvent event) {
+        Entity entity = event.getEntity();
+        Faction faction = factionOfKing(entity);
+        if (faction == null || !(entity.level() instanceof ServerLevel level)) {
+            return;
+        }
+        // Review fix (round 1): discard any stale pending capture from an earlier, cancelled death attempt
+        // first -- see PopulationDeathDecrement's own class doc. A King's eligibility never itself flips,
+        // but every onLivingDeath listener does this uniformly so no future change here can silently
+        // reopen that staleness window.
+        PopulationDeathDecrement.take(entity.getUUID());
+        LevelField field = PopulationSimulation.field(level, faction);
+        PopulationDeathDecrement.capture(entity.getUUID(), faction, field.cellAt(entity.blockPosition()),
+            DynamicPopulationConfig.get().kingDeathTargetDecrement());
+    }
 
     @SubscribeEvent
     public static void onEntityLeaveLevel(EntityLeaveLevelEvent event) {

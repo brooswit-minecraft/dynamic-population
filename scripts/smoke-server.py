@@ -85,6 +85,20 @@ def boot(root):
         lines.put(None)
 
     threading.Thread(target=read_output, daemon=True).start()
+
+    def drain_for(seconds):
+        end = time.monotonic() + seconds
+        captured = []
+        while time.monotonic() < end:
+            try:
+                line = lines.get(timeout=max(0.01, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if line is None:
+                raise RuntimeError("Server exited during a wait window")
+            captured.append(line)
+        return captured
+
     try:
         deadline = time.monotonic() + 300
         mod_loaded = False
@@ -140,9 +154,168 @@ def boot(root):
                     break
         print("Verified all three King entity types summon without crashing", flush=True)
 
+        # MINECRAFT-425 (reviewer-requested real handler-composition regression): LivingDeathEvent is a
+        # single global NeoForge event -- every registered onLivingDeath listener (FillagerPopulationSimulation's,
+        # FillerFactionSimulation's, king.KingDeathHandling's) runs for EVERY dying entity, not just the ones
+        # each class cares about, since Fillager and the three King entity classes are ALSO Mob instances. An
+        # earlier version of this change had FillerFactionSimulation's listener call
+        # PopulationDeathDecrement.take() unconditionally for any Mob, which (registration order matters --
+        # it runs after both of the others) erased the Fillager's/King's own valid same-event capture before
+        # this real death's confirmed removal could apply it -- a real source-proven regression a pure-logic
+        # JUnit test cannot reach, since it needs the real global event bus with all production listeners
+        # registered, and real entity classes. This drives each of the four already-summoned, already-tagged
+        # entities above (the Fillager, and all three Kings) through an actual death and asserts its own
+        # faction's field dropped by EXACTLY the right configured decrement at its own death cell -- proving
+        # no other handler's capture/consume silently ate it. A 1000 ppt baseline (not 500) is used for
+        # every entity here, specifically so a King's much larger king_death_target_decrement (default 500)
+        # still leaves an unambiguous, clearly-non-zero remainder (500, not floored to 0) -- the same
+        # baseline also still cleanly distinguishes the Fillager/filler's smaller
+        # population_death_target_decrement (default 25) landing at 975 from either a no-op (1000) or a
+        # wrong-amount decrement.
+        #
+        # Deliberately placed BEFORE the "/dpop king settle" section below, not after: a settled King is
+        # REGISTERED (king.KingManager/KingRecord), and a registered King periodically SEEDS every cell
+        # within king_seed_radius_cells (default 3 cells, independent of propagation and NOT pinned by the
+        # propagation_step_interval_ticks override above) of its OWN position -- CI run 39263492511
+        # observed exactly this: the Villager King settled at x=100 (cell 1) seeds cell 0 too (within
+        # radius 3), adding +5 ppt during this section's own wait window and landing at 505, not 500. A
+        # King created by plain /summon (this section's own dpop_smoke_vk/zk/sk) is never registered, so
+        # it never seeds anything -- confirmed by king.KingSimulation.seedAll's own source (iterates
+        # KingManager.kings(...), the registry, never "every live King entity"). Running before any
+        # registered King exists sidesteps this seeding confound entirely, the same way the battle/
+        # persistence-check sections below sidestep it by using cells far outside any settled King's range.
+        def wait_for(check, timeout, timeout_message):
+            """Polls the shared output queue, returning check(line)'s first non-None result -- unlike
+            drain_for, this returns the INSTANT a match is found rather than blocking for the full timeout,
+            which matters here: propagation (a separate, continuously-running system, same real cause
+            documented at length in refresh_density's own doc below) steps this cell every
+            propagation_step_interval_ticks (default 20 ticks, ~1s) REGARDLESS of whether a command was
+            sent, so an unnecessary extra second or two of blocking between two command round-trips lets
+            this test's own baseline decay before it is even confirmed -- exactly what the first version of
+            this check got wrong (CI run 39262037957 observed 1000 ppt decay to 821 ppt purely from this
+            kind of avoidable delay, with no kill involved yet)."""
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+                except queue.Empty:
+                    return None
+                if line is None:
+                    raise RuntimeError(f"Server exited while {timeout_message}")
+                result = check(line)
+                if result is not None:
+                    return result
+
+        def read_entity_position(tag):
+            # The raw server log line has its OWN leading brackets (timestamp, thread, logger name) before
+            # "... has the following entity data: [0.5d, -60.0d, 0.5d]" -- a naive first-'['-to-first-']'
+            # extraction grabs the timestamp instead of the Pos array, so this anchors specifically on the
+            # "entity data:" marker vanilla's own /data get feedback always includes right before the array.
+            pattern = re.compile(r'entity data:\s*\[(.*?)\]')
+            process.stdin.write(f'data get entity @e[tag={tag},limit=1] Pos\n')
+            process.stdin.flush()
+
+            def check(line):
+                match = pattern.search(line)
+                if not match:
+                    return None
+                try:
+                    return [float(part.strip().rstrip('d')) for part in match.group(1).split(',')]
+                except ValueError:
+                    return None
+
+            return wait_for(check, 2, f"reading {tag}'s position")
+
+        def read_density(pos, faction_label):
+            # The /dpop command literal is lowercase ("villager"/"zombie"/"skeleton"), but its own output
+            # echoes the Java Faction enum's name() verbatim, which is uppercase ("[VILLAGER] cell ...").
+            x, y, z = pos
+            process.stdin.write(f'execute positioned {x} {y} {z} run dpop show {faction_label.lower()}\n')
+            process.stdin.flush()
+            prefix = f"[{faction_label}] cell"
+            pattern = re.compile(re.escape(prefix) + r".*?=\s*(\d+)\s*ppt")
+
+            def check(line):
+                if prefix not in line:
+                    return None
+                match = pattern.search(line)
+                return int(match.group(1)) if match else None
+
+            return wait_for(check, 2, f"reading {faction_label} density")
+
+        death_decrement_checks = [
+            ("dpop_smoke", "VILLAGER", "the Fillager", 25, 975),
+            ("dpop_smoke_vk", "VILLAGER", "the Villager King", 500, 500),
+            ("dpop_smoke_zk", "ZOMBIE", "the Zombie King", 500, 500),
+            ("dpop_smoke_sk", "SKELETON", "the Skeleton King", 500, 500),
+        ]
+        # EXACT equality, not a tolerance: propagation_step_interval_ticks is pinned to its configured
+        # maximum (1200 ticks, 60s) for this whole throwaway server via the config file seeded before
+        # first boot above -- propagation structurally cannot fire during this short section, so there is
+        # no decay left to tolerate. A review round found the earlier version of this check flaky for
+        # exactly that reason (CI run 39262037957); this fixes the actual cause instead of loosening the
+        # assertion.
+        for tag, faction_label, description, expect_decrement, expect_after in death_decrement_checks:
+            process.stdin.write(f'execute as @e[tag={tag}] at @s run dpop set {faction_label.lower()} 1000\n')
+            process.stdin.flush()
+            pos = read_entity_position(tag)
+            if pos is None:
+                raise RuntimeError(f"MINECRAFT-425 death-decrement check: could not read {description}'s position")
+            baseline = read_density(pos, faction_label)
+            if baseline != 1000:
+                raise RuntimeError(
+                    f"MINECRAFT-425 death-decrement check: baseline 1000 ppt not confirmed at {description}'s "
+                    f"own cell before killing it (read {baseline}) -- see captured output above."
+                )
+            process.stdin.write(f'kill @e[tag={tag}]\n')
+            process.stdin.flush()
+            # Confirmed-KILLED removal fires via LivingEntity#tickDeath ~20 ticks (~1s) after an uncancelled
+            # LivingDeathEvent, never before (see king.KingDeathHandling's own doc) -- wait past that with
+            # margin before reading the field back.
+            time.sleep(1.2)
+            after = read_density(pos, faction_label)
+            if after != expect_after:
+                raise RuntimeError(
+                    f"MINECRAFT-425 death-decrement check FAILED: {description}'s own death left "
+                    f"{faction_label} at {after} ppt ({baseline} -> {after}), not exactly the expected "
+                    f"{expect_after} ppt (a {expect_decrement} ppt decrement) at its own death cell -- this "
+                    f"would indicate another onLivingDeath listener's pending capture/consume silently ate "
+                    f"(or never recorded) this one, or applied the wrong amount, see "
+                    f"PopulationDeathDecrement's own class doc."
+                )
+        print(
+            "Verified real handler-composition: the Fillager decremented by exactly "
+            "population_death_target_decrement (25) and all three Kings each decremented by exactly "
+            "king_death_target_decrement (500), each at its own death cell, with no other onLivingDeath "
+            "listener clobbering another's capture.",
+            flush=True,
+        )
+
         # MINECRAFT-390 scope item 7: verify the EXISTING /dpop king settle command route itself (not just
         # a raw /summon) creates the new visible King entities correctly, for every faction. The server
         # console itself already has full permission, so no /op is needed.
+        #
+        # MINECRAFT-425 root cause (confirmed via an explicit per-type present/missing diagnostic, CI run
+        # 39267168480: all three types reported MISSING immediately after settle itself reported SETTLED
+        # for all three): x=100,z=0 was never force-loaded, unlike every OTHER remote test position in this
+        # file (battle_pos, persist_pos, etc., all preceded by their own `forceload add`). `settle` still
+        # reports SETTLED because `Level#addFreshEntity` itself does not require the target chunk to be
+        # loaded/ticking to succeed -- but an entity inserted into a non-loaded chunk is invisible to EVERY
+        # `@e` selector query (type-only, tag-only, or distance-based alike) until that chunk actually
+        # loads, which explains why every selector variant tried here previously (bare type, a settle-
+        # specific tag via three different distance-selector forms) all failed identically: the entity
+        # genuinely wasn't selector-visible yet, regardless of which selector shape was used. Force-loading
+        # BEFORE settling, the same way every other remote position in this file already does, is the fix.
+        process.stdin.write('forceload add 96 -16 112 16\n')
+        process.stdin.flush()
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            try:
+                line = lines.get(timeout=max(0.01, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if line is None:
+                raise RuntimeError("Server exited while force-loading the King settle location")
         settled_factions = set()
         for literal, faction, marker in [
             ("settle villager", "VILLAGER", "DPOP_SETTLE_VILLAGER"),
@@ -171,21 +344,42 @@ def boot(root):
         # Confirm the settle command actually created a real, queryable entity of each type (not just a
         # record), by querying the live entity count directly -- distinct from the DPOP_*_SPAWN_OK /summon
         # check above, which only proves the entity TYPE itself can be summoned, not that the settle command
-        # route wires through to a real spawn.
-        process.stdin.write(
-            'execute if entity @e[type=dynamicpopulation:villager_king] '
-            'if entity @e[type=dynamicpopulation:zombie_king] '
-            'if entity @e[type=dynamicpopulation:skeleton_king] '
-            'run say DPOP_KING_SETTLE_COMMAND_OK\n'
-        )
+        # route wires through to a real spawn. Type-only (see note above for why this is specific enough
+        # now that this section runs after this script's own raw-summoned Kings are already dead).
+        # MINECRAFT-425 diagnostic: report EACH type's presence individually and unconditionally (never
+        # silently no-op like a chained `execute if entity ... if entity ...` does), so a failure here
+        # names exactly which type(s), if any, are missing rather than just timing out uninformatively.
+        for king_type in ["villager_king", "zombie_king", "skeleton_king"]:
+            process.stdin.write(
+                f'execute if entity @e[type=dynamicpopulation:{king_type}] run say DPOP_{king_type.upper()}_PRESENT\n'
+            )
+            process.stdin.write(
+                f'execute unless entity @e[type=dynamicpopulation:{king_type}] run say DPOP_{king_type.upper()}_MISSING\n'
+            )
+        process.stdin.write('say DPOP_KING_SETTLE_DIAGNOSTIC_DONE\n')
         process.stdin.flush()
+        presence = {}
         deadline = time.monotonic() + 30
         while True:
             line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
             if line is None:
                 raise RuntimeError("Server exited while verifying /dpop king settle created real entities")
-            if "DPOP_KING_SETTLE_COMMAND_OK" in line:
+            for king_type in ["villager_king", "zombie_king", "skeleton_king"]:
+                if f"DPOP_{king_type.upper()}_PRESENT" in line:
+                    presence[king_type] = True
+                if f"DPOP_{king_type.upper()}_MISSING" in line:
+                    presence[king_type] = False
+            if "DPOP_KING_SETTLE_DIAGNOSTIC_DONE" in line:
                 break
+        missing = [k for k, present in presence.items() if not present]
+        if missing or len(presence) != 3:
+            raise RuntimeError(
+                f"MINECRAFT-425 diagnostic: /dpop king settle reported SETTLED for every faction, but "
+                f"these King type(s) are not queryable afterward: {missing or 'all (no response at all)'} "
+                f"-- presence map: {presence}. See captured output above for any King death/combat/removal "
+                f"activity in between that would explain it."
+            )
+        print("DPOP king settle diagnostic: all three King types present and queryable", flush=True)
         assert settled_factions == {"VILLAGER", "ZOMBIE", "SKELETON"}
         print("Verified /dpop king settle creates real King entities for every faction", flush=True)
 
@@ -238,19 +432,6 @@ def boot(root):
                 "1000 ppt at the battle position -- the chunk may still not have been loaded in time for "
                 "/dpop set to take effect; see captured output above."
             )
-
-        def drain_for(seconds):
-            end = time.monotonic() + seconds
-            captured = []
-            while time.monotonic() < end:
-                try:
-                    line = lines.get(timeout=max(0.01, end - time.monotonic()))
-                except queue.Empty:
-                    break
-                if line is None:
-                    raise RuntimeError("Server exited during a wait window")
-                captured.append(line)
-            return captured
 
         def query_health_unambiguous(tag, descriptor_substring):
             """Query one tagged entity's Health and return the parsed float from THIS SPECIFIC query's
@@ -703,6 +884,24 @@ if __name__ == "__main__":
         )
         (root / "mods").mkdir(exist_ok=True)
         shutil.copy2(jar, root / "mods" / jar.name)
+        # MINECRAFT-425 (reviewer-requested determinism, review finding on job 118091910661/run
+        # 39262037957): propagation is a SEPARATE, continuously-running system that steps every active
+        # cell (any cell /dpop set ever touched) every propagation_step_interval_ticks (default 20 ticks,
+        # ~1s) -- which overlaps, unpredictably and with its own internal RNG (Propagation.step takes a
+        # a random.Random), with the ~1s this test must itself wait for a kill's confirmed-KILLED removal.
+        # Pre-seeding this config file BEFORE first boot (read at normal ModConfigEvent.Loading, the
+        # always-exercised path -- NOT the live file-watcher reload DynamicPopulationConfig's own doc
+        # flags as "NOT OBSERVED" in a running server) pins the interval to the config's own maximum
+        # (1200 ticks, 60s) for this throwaway server's whole run -- far longer than this script's own
+        # multi-second checks -- so propagation structurally cannot fire during them at all. This makes
+        # the MINECRAFT-425 death-decrement check below exact and deterministic by construction, not by
+        # timing luck, while every OTHER section's own refresh_density-style re-assertion against decay
+        # simply becomes a no-op-safe redundancy (never a regression) since there is no decay left to
+        # counteract.
+        (root / "config").mkdir(exist_ok=True)
+        (root / "config" / "dynamicpopulation-server.toml").write_text(
+            "propagation_step_interval_ticks = 1200\n"
+        )
         print(f"Booting throwaway dedicated server in {root} with {jar.name} installed", flush=True)
         boot(root)
         print("Server-boot smoke check passed", flush=True)
