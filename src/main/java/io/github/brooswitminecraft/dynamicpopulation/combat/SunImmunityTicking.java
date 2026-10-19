@@ -272,6 +272,15 @@ public final class SunImmunityTicking {
         FireIgnitionTracking.Decision decision = FireIgnitionTracking.decide(currentFireTicks, previousFireTicks,
             previouslyProtected, previousExternalBudgetTicks, ticksElapsed, knownNonSunCause, sunEligible(level, mob),
             overrideActive);
+        // MINECRAFT-427 diagnostic probe -- temporary, read-only, no behavior change. Remove before merge.
+        if (mob.getTags().contains("dpop_test_entity") && currentFireTicks > 0) {
+            System.out.println("DPOP_DIAG uuid=" + mob.getUUID() + " health=" + mob.getHealth()
+                + " gameTime=" + gameTime + " tags=" + mob.getTags() + " currentFireTicks=" + currentFireTicks
+                + " previousFireTicks=" + previousFireTicks + " ticksElapsed=" + ticksElapsed
+                + " density=" + density + " overrideActive=" + overrideActive
+                + " sunEligible=" + sunEligible(level, mob) + " knownNonSunCause=" + knownNonSunCause
+                + " decision=" + decision);
+        }
 
         if (decision.nextProtected()) {
             PROTECTED_BURN.put(mob, Boolean.TRUE);
