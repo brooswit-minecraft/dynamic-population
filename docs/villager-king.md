@@ -110,15 +110,22 @@ the matching location-free announcement, e.g. "A Skeleton King has died.",
 and retires that King's `KingRecord.Entry` so `KingEntitySync` can never
 resurrect it and registry-driven seeding stops reading from a dead source;
 the faction's population density field itself is untouched. This listens on
-`LivingDeathEvent` at `EventPriority.LOWEST` and bails out on
-`event.isCanceled()`, so a cancelled (e.g. totem-of-undying-prevented) death
-never announces. Dedupe and scope are both carried by one check — whether
-the dying entity's id is still present in the registry: an administrative
-`KingManager.removeNearest` discard already removes the record before
-discarding the entity, and a hypothetical second death callback for the same
-entity finds the id already removed by the first — so neither double-fires,
-and no explicit King-vs-King hostility/targeting exists (tracked separately,
-deliberately out of this story's scope).
+`EntityLeaveLevelEvent` (not the earlier, cancellable `LivingDeathEvent` --
+see `KingDeathHandling`'s own javadoc for the P1 review fix and why) and
+only treats it as a genuine death when `entity.getRemovalReason() == KILLED`,
+which vanilla only ever sets from `LivingEntity#tickDeath`'s removal call
+~20 ticks after an UNCANCELLED death -- never for an ordinary chunk
+unload/reload, and never at all if the death was prevented. Dedupe and
+scope are both carried by one check — whether the dying entity's id is
+still present in the registry: an administrative `KingManager.removeNearest`
+discard already removes the record before discarding the entity, and a
+hypothetical second death callback for the same entity finds the id already
+removed by the first — so neither double-fires. MINECRAFT-416 adds
+cross-type King-vs-King hostility (see "Cross-type King hostility" below)
+as the explicit, separately-tracked follow-up this paragraph used to say
+did not exist yet -- a King killed in that combat goes through this exact
+same death path, since it listens for any King's removal-by-death, not a
+specific cause.
 
 ## Persistence, migration, and no duplicates (MINECRAFT-390)
 
@@ -375,13 +382,30 @@ own live `Attributes.FOLLOW_RANGE` value, not a new hardcoded constant.
 **Lifecycle/death-notification integration**: MINECRAFT-414 owns the actual
 King death-chat-announcement and dead-source-retirement path (so that a real
 combat death between two Kings announces exactly once, and chunk
-unload/ordinary reload never falsely announces one). This ticket's combat
-changes do not implement or duplicate that path — they only make the combat
-that can trigger a real King death possible. As of this PR, MINECRAFT-414
-had not yet landed (still in progress, no pushed branch/PR), so end-to-end
-"King A kills King B, which announces once and retires its source" has not
-been exercised together in one build; see the MINECRAFT-416 PR description
-for what was and was not verified.
+unload/ordinary reload never falsely announces one; see "King death" above).
+This ticket's combat changes do not implement or duplicate that path — they
+only make the combat that can trigger a real King death possible.
+MINECRAFT-414 has since landed on `main`; `KingDeathHandling` listens for
+any King's `KILLED` removal regardless of cause, so a King killed by an
+opposing King's `KingHostilityTargetGoal`-driven attack goes through that
+exact same path with no code on either side needing to know about the
+other. End-to-end "King A kills King B, which announces once and retires
+its source" HAS since been exercised in a live dedicated-server run (not
+just `./gradlew build`/`test`): two `/dpop king settle`-founded Kings
+(Villager, Zombie) were placed in range with no further intervention; the
+Villager King died in real combat, exactly one "A Villager King has died."
+was logged, `/dpop king list` dropped from 2 to 1 King(s) immediately, and
+a full `stop`+restart of the server afterward still showed exactly 1
+King(s) (the survivor, identity preserved) with zero leaked spawn/death
+announcements -- no resurrection of the dead King. See the MINECRAFT-416
+Jira ticket for the full run transcript and the three other six-direction
+acquisition/damage pairings (Villager/Zombie, Villager/Skeleton,
+Zombie/Skeleton), each independently confirming bidirectional real combat
+damage from a clean, undamaged starting baseline. Not covered by that run:
+a long-running/production-scale playtest, or every other acceptance
+sub-case (density 0/499/500/501, unload-mid-chase) -- those are covered by
+source inspection and existing unit tests instead (see the ticket for the
+item-by-item reconciliation).
 
 ## Zombie/Skeleton fillers (MINECRAFT-390)
 
