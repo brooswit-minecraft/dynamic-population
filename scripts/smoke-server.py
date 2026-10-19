@@ -154,55 +154,6 @@ def boot(root):
                     break
         print("Verified all three King entity types summon without crashing", flush=True)
 
-        # MINECRAFT-390 scope item 7: verify the EXISTING /dpop king settle command route itself (not just
-        # a raw /summon) creates the new visible King entities correctly, for every faction. The server
-        # console itself already has full permission, so no /op is needed.
-        settled_factions = set()
-        for literal, faction, marker in [
-            ("settle villager", "VILLAGER", "DPOP_SETTLE_VILLAGER"),
-            ("settle zombie", "ZOMBIE", "DPOP_SETTLE_ZOMBIE"),
-            ("settle skeleton", "SKELETON", "DPOP_SETTLE_SKELETON"),
-        ]:
-            process.stdin.write(f'execute positioned 100 -59 0 run dpop king {literal}\n')
-            process.stdin.write(f'say {marker}_ISSUED\n')
-            process.stdin.flush()
-            deadline = time.monotonic() + 30
-            settled = False
-            while True:
-                line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
-                if line is None:
-                    raise RuntimeError(f"Server exited while running /dpop king {literal}")
-                if f"a {faction} King settled at" in line:
-                    settled = True
-                if f"{marker}_ISSUED" in line:
-                    break
-            if not settled:
-                raise RuntimeError(
-                    f"/dpop king {literal} did not report settling (territory/uniqueness check may have "
-                    f"rejected it) -- see captured output above."
-                )
-            settled_factions.add(faction)
-        # Confirm the settle command actually created a real, queryable entity of each type (not just a
-        # record), by querying the live entity count directly -- distinct from the DPOP_*_SPAWN_OK /summon
-        # check above, which only proves the entity TYPE itself can be summoned, not that the settle command
-        # route wires through to a real spawn.
-        process.stdin.write(
-            'execute if entity @e[type=dynamicpopulation:villager_king] '
-            'if entity @e[type=dynamicpopulation:zombie_king] '
-            'if entity @e[type=dynamicpopulation:skeleton_king] '
-            'run say DPOP_KING_SETTLE_COMMAND_OK\n'
-        )
-        process.stdin.flush()
-        deadline = time.monotonic() + 30
-        while True:
-            line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
-            if line is None:
-                raise RuntimeError("Server exited while verifying /dpop king settle created real entities")
-            if "DPOP_KING_SETTLE_COMMAND_OK" in line:
-                break
-        assert settled_factions == {"VILLAGER", "ZOMBIE", "SKELETON"}
-        print("Verified /dpop king settle creates real King entities for every faction", flush=True)
-
         # MINECRAFT-425 (reviewer-requested real handler-composition regression): LivingDeathEvent is a
         # single global NeoForge event -- every registered onLivingDeath listener (FillagerPopulationSimulation's,
         # FillerFactionSimulation's, king.KingDeathHandling's) runs for EVERY dying entity, not just the ones
@@ -221,6 +172,18 @@ def boot(root):
         # baseline also still cleanly distinguishes the Fillager/filler's smaller
         # population_death_target_decrement (default 25) landing at 975 from either a no-op (1000) or a
         # wrong-amount decrement.
+        #
+        # Deliberately placed BEFORE the "/dpop king settle" section below, not after: a settled King is
+        # REGISTERED (king.KingManager/KingRecord), and a registered King periodically SEEDS every cell
+        # within king_seed_radius_cells (default 3 cells, independent of propagation and NOT pinned by the
+        # propagation_step_interval_ticks override above) of its OWN position -- CI run 39263492511
+        # observed exactly this: the Villager King settled at x=100 (cell 1) seeds cell 0 too (within
+        # radius 3), adding +5 ppt during this section's own wait window and landing at 505, not 500. A
+        # King created by plain /summon (this section's own dpop_smoke_vk/zk/sk) is never registered, so
+        # it never seeds anything -- confirmed by king.KingSimulation.seedAll's own source (iterates
+        # KingManager.kings(...), the registry, never "every live King entity"). Running before any
+        # registered King exists sidesteps this seeding confound entirely, the same way the battle/
+        # persistence-check sections below sidestep it by using cells far outside any settled King's range.
         def wait_for(check, timeout, timeout_message):
             """Polls the shared output queue, returning check(line)'s first non-None result -- unlike
             drain_for, this returns the INSTANT a match is found rather than blocking for the full timeout,
@@ -327,6 +290,55 @@ def boot(root):
             "listener clobbering another's capture.",
             flush=True,
         )
+
+        # MINECRAFT-390 scope item 7: verify the EXISTING /dpop king settle command route itself (not just
+        # a raw /summon) creates the new visible King entities correctly, for every faction. The server
+        # console itself already has full permission, so no /op is needed.
+        settled_factions = set()
+        for literal, faction, marker in [
+            ("settle villager", "VILLAGER", "DPOP_SETTLE_VILLAGER"),
+            ("settle zombie", "ZOMBIE", "DPOP_SETTLE_ZOMBIE"),
+            ("settle skeleton", "SKELETON", "DPOP_SETTLE_SKELETON"),
+        ]:
+            process.stdin.write(f'execute positioned 100 -59 0 run dpop king {literal}\n')
+            process.stdin.write(f'say {marker}_ISSUED\n')
+            process.stdin.flush()
+            deadline = time.monotonic() + 30
+            settled = False
+            while True:
+                line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+                if line is None:
+                    raise RuntimeError(f"Server exited while running /dpop king {literal}")
+                if f"a {faction} King settled at" in line:
+                    settled = True
+                if f"{marker}_ISSUED" in line:
+                    break
+            if not settled:
+                raise RuntimeError(
+                    f"/dpop king {literal} did not report settling (territory/uniqueness check may have "
+                    f"rejected it) -- see captured output above."
+                )
+            settled_factions.add(faction)
+        # Confirm the settle command actually created a real, queryable entity of each type (not just a
+        # record), by querying the live entity count directly -- distinct from the DPOP_*_SPAWN_OK /summon
+        # check above, which only proves the entity TYPE itself can be summoned, not that the settle command
+        # route wires through to a real spawn.
+        process.stdin.write(
+            'execute if entity @e[type=dynamicpopulation:villager_king] '
+            'if entity @e[type=dynamicpopulation:zombie_king] '
+            'if entity @e[type=dynamicpopulation:skeleton_king] '
+            'run say DPOP_KING_SETTLE_COMMAND_OK\n'
+        )
+        process.stdin.flush()
+        deadline = time.monotonic() + 30
+        while True:
+            line = lines.get(timeout=max(0.01, deadline - time.monotonic()))
+            if line is None:
+                raise RuntimeError("Server exited while verifying /dpop king settle created real entities")
+            if "DPOP_KING_SETTLE_COMMAND_OK" in line:
+                break
+        assert settled_factions == {"VILLAGER", "ZOMBIE", "SKELETON"}
+        print("Verified /dpop king settle creates real King entities for every faction", flush=True)
 
         # MINECRAFT-390 (reviewer-requested acceptance evidence): a REAL multi-tick battle, not just a
         # pure-logic unit test. Force both factions' local density to >=500 at a fixed position (the same
