@@ -294,12 +294,25 @@ def boot(root):
         # MINECRAFT-390 scope item 7: verify the EXISTING /dpop king settle command route itself (not just
         # a raw /summon) creates the new visible King entities correctly, for every faction. The server
         # console itself already has full permission, so no /op is needed.
+        #
+        # MINECRAFT-425 review hardening: the final verification below used to query by bare entity TYPE
+        # (`@e[type=dynamicpopulation:villager_king]`, etc.), which is satisfied by ANY entity of that
+        # type anywhere in the loaded world -- including this script's OWN raw-/summon-ed King entities
+        # (dpop_smoke_vk/zk/sk) above, were they still alive. Moving the MINECRAFT-425 death-decrement
+        # section to run BEFORE this one (so it isn't itself confounded by a settled King's seeding -- see
+        # that section's own comment) means those raw-summoned Kings are already dead by the time this
+        # runs, so the type-only query would now -- for the first time -- be a GENUINE test of whether
+        # settle's own entities exist, rather than being silently satisfied by something else. Tagging each
+        # settled entity specifically (by the exact position it just reported settling at, immediately
+        # after settling) and verifying by THAT tag removes the ambiguity either way: this check now always
+        # verifies the command-settled entity specifically, never anything merely coincidental.
         settled_factions = set()
         for literal, faction, marker in [
             ("settle villager", "VILLAGER", "DPOP_SETTLE_VILLAGER"),
             ("settle zombie", "ZOMBIE", "DPOP_SETTLE_ZOMBIE"),
             ("settle skeleton", "SKELETON", "DPOP_SETTLE_SKELETON"),
         ]:
+            settle_tag = f"dpop_settled_{faction.lower()}_king"
             process.stdin.write(f'execute positioned 100 -59 0 run dpop king {literal}\n')
             process.stdin.write(f'say {marker}_ISSUED\n')
             process.stdin.flush()
@@ -319,14 +332,21 @@ def boot(root):
                     f"rejected it) -- see captured output above."
                 )
             settled_factions.add(faction)
+            # Tag the entity that JUST settled at this exact, known position -- not "any entity of this
+            # type" -- so the verification below is specific to it.
+            process.stdin.write(
+                f'tag @e[type=dynamicpopulation:{faction.lower()}_king,x=100,y=-59,z=0,distance=..5] '
+                f'add {settle_tag}\n'
+            )
+            process.stdin.flush()
         # Confirm the settle command actually created a real, queryable entity of each type (not just a
         # record), by querying the live entity count directly -- distinct from the DPOP_*_SPAWN_OK /summon
         # check above, which only proves the entity TYPE itself can be summoned, not that the settle command
-        # route wires through to a real spawn.
+        # route wires through to a real spawn. Queries by the settle-specific tag (see above), never bare type.
         process.stdin.write(
-            'execute if entity @e[type=dynamicpopulation:villager_king] '
-            'if entity @e[type=dynamicpopulation:zombie_king] '
-            'if entity @e[type=dynamicpopulation:skeleton_king] '
+            'execute if entity @e[tag=dpop_settled_villager_king] '
+            'if entity @e[tag=dpop_settled_zombie_king] '
+            'if entity @e[tag=dpop_settled_skeleton_king] '
             'run say DPOP_KING_SETTLE_COMMAND_OK\n'
         )
         process.stdin.flush()
