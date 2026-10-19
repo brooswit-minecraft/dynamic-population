@@ -68,6 +68,11 @@ public final class KingDeathHandling {
         if (faction == null || !(entity.level() instanceof ServerLevel level)) {
             return;
         }
+        // Review fix (round 1): discard any stale pending capture from an earlier, cancelled death attempt
+        // first -- see PopulationDeathDecrement's own class doc. A King's eligibility never itself flips,
+        // but every onLivingDeath listener does this uniformly so no future change here can silently
+        // reopen that staleness window.
+        PopulationDeathDecrement.take(entity.getUUID());
         LevelField field = PopulationSimulation.field(level, faction);
         PopulationDeathDecrement.capture(entity.getUUID(), faction, field.cellAt(entity.blockPosition()));
     }

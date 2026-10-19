@@ -134,4 +134,89 @@ class PopulationDeathDecrementTest {
         DynamicPopulationConfigTestSupport.load();
         assertEquals(25, DynamicPopulationConfig.get().populationDeathTargetDecrement());
     }
+
+    // Review fix (round 1), issue 1: a client-side leave event (same UUID, integrated client+server JVM)
+    // must never touch the shared PENDING map at all.
+
+    @Test
+    void aClientSideLeaveEventNeverConsumesTheServerCapturedPending() {
+        UUID id = UUID.randomUUID();
+        PopulationDeathDecrement.capture(id, Faction.ZOMBIE, ORIGIN);
+
+        var consumedByClient = PopulationDeathDecrement.consumeIfConfirmedServerKill(false, id, "KILLED");
+
+        assertFalse(consumedByClient.isPresent(), "a client-side (non-server) leave event must never return a pending death");
+        var stillPending = PopulationDeathDecrement.take(id);
+        assertTrue(stillPending.isPresent(), "the server-captured pending death must survive an earlier "
+            + "client-side leave event for the same UUID, untouched, for the real server-side event to find");
+        assertEquals(ORIGIN, stillPending.get().cell());
+    }
+
+    @Test
+    void aServerSideConfirmedKillConsumesAndReturnsThePendingDeath() {
+        UUID id = UUID.randomUUID();
+        PopulationDeathDecrement.capture(id, Faction.SKELETON, ORIGIN);
+
+        var consumed = PopulationDeathDecrement.consumeIfConfirmedServerKill(true, id, "KILLED");
+
+        assertTrue(consumed.isPresent());
+        assertEquals(Faction.SKELETON, consumed.get().faction());
+        assertFalse(PopulationDeathDecrement.take(id).isPresent(), "a confirmed KILLED consume must remove the entry");
+    }
+
+    @Test
+    void aServerSideNonKillRemovalStillDiscardsTheStaleEntryButReturnsNothing() {
+        // An ordinary chunk unload/reload, or an administrative discard, is still server-side and must still
+        // clear a stale pending entry (so it cannot later be wrongly consumed by an unrelated future event
+        // for a reused/colliding UUID scenario), but must never itself return a pending death to apply.
+        UUID id = UUID.randomUUID();
+        PopulationDeathDecrement.capture(id, Faction.VILLAGER, ORIGIN);
+
+        var consumed = PopulationDeathDecrement.consumeIfConfirmedServerKill(true, id, "UNLOADED_TO_CHUNK");
+
+        assertFalse(consumed.isPresent());
+        assertFalse(PopulationDeathDecrement.take(id).isPresent(), "the entry must not be left dangling after a server-side leave");
+    }
+
+    // Review fix (round 1), issue 2: a stale capture from a CANCELLED death must not survive a later
+    // onLivingDeath call for the same UUID that finds the entity no longer eligible -- see
+    // FillerFactionSimulation.onLivingDeath's own "take() first, capture() only if still eligible" fix.
+
+    @Test
+    void takingFirstThenNotRecapturingDiscardsAStaleCancelledDeathBeforeTheRealOne() {
+        UUID id = UUID.randomUUID();
+        CellKey cancelledDeathCell = ORIGIN;
+        CellKey realDeathCell = ORIGIN.offset(5, 0, 0);
+
+        // The cancelled attempt: captured, never consumed (the death never reached confirmed removal).
+        PopulationDeathDecrement.capture(id, Faction.ZOMBIE, cancelledDeathCell);
+
+        // Models FillerFactionSimulation.onLivingDeath's fix: the entity has since become ineligible (e.g.
+        // persistence-required), so this later onLivingDeath call for the SAME uuid takes-first (discarding
+        // the stale cancelledDeathCell entry) and does NOT recapture, since it is no longer eligible.
+        PopulationDeathDecrement.take(id);
+
+        // The real death's confirmed removal must find nothing pending -- never the stale cancelled cell.
+        var consumed = PopulationDeathDecrement.consumeIfConfirmedServerKill(true, id, "KILLED");
+        assertFalse(consumed.isPresent(), "a stale cancelled-death capture must never survive to be applied "
+            + "at the wrong cell once the entity becomes ineligible before its real death");
+    }
+
+    @Test
+    void takingFirstThenRecapturingReplacesAStaleCancelledDeathWithTheRealOne() {
+        UUID id = UUID.randomUUID();
+        CellKey cancelledDeathCell = ORIGIN;
+        CellKey realDeathCell = ORIGIN.offset(5, 0, 0);
+
+        PopulationDeathDecrement.capture(id, Faction.ZOMBIE, cancelledDeathCell);
+
+        // The entity is STILL eligible at its real death: take-first discards the stale entry, then capture
+        // records the real death's own cell.
+        PopulationDeathDecrement.take(id);
+        PopulationDeathDecrement.capture(id, Faction.ZOMBIE, realDeathCell);
+
+        var consumed = PopulationDeathDecrement.consumeIfConfirmedServerKill(true, id, "KILLED");
+        assertTrue(consumed.isPresent());
+        assertEquals(realDeathCell, consumed.get().cell(), "the real death's own cell must win, never the stale cancelled one");
+    }
 }

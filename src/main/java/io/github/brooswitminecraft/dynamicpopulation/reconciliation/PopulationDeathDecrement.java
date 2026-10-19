@@ -34,11 +34,37 @@ import net.neoforged.neoforge.event.server.ServerStoppedEvent;
  * {@link #capture} only ever remembers an in-memory (faction, cell) pending tuple, keyed by the entity's
  * UUID -- never storage. This class alone owns the other half: the single {@link #onEntityLeaveLevel}
  * listener that decides whether to actually apply it, gated on the SAME confirmed-{@code KILLED}-removal
- * signal {@code king.KingDeathHandling} already uses for source retirement. A cancelled death never reaches
- * that removal at all, so its pending entry is simply left to be overwritten by a later capture for the
- * same UUID (or discarded, un-applied, the next time that entity leaves the level for any other reason);
- * a genuine death is consumed -- removed from the map -- exactly once, so neither a duplicate leave-level
- * callback nor a lingering stale entry can ever apply the decrement twice.
+ * signal {@code king.KingDeathHandling} already uses for source retirement.
+ *
+ * <p><b>Review fix (round 1): client-side leave events must never touch {@code PENDING}.</b> In an
+ * integrated client+server JVM (singleplayer), the SAME UUID has a server-side {@code Entity} and a
+ * separate client-side one, each firing its OWN {@code EntityLeaveLevelEvent} against its own
+ * {@code Level}; since {@code PENDING} is static (shared across both), a client-side leave event reaching
+ * {@link #take} first -- on a {@code ClientLevel}, for a reason that is never the authoritative one -- would
+ * silently consume (and lose) the real, server-captured pending death before the server-side confirmed-
+ * {@code KILLED} event ever got a chance to see it. {@link #onEntityLeaveLevel} therefore checks
+ * {@code event.getLevel() instanceof ServerLevel} BEFORE calling {@link #take} at all (via
+ * {@link #consumeIfConfirmedServerKill}, the pure half of that gate) -- {@code PENDING} is mutated only by a
+ * server-side leave event, never a client-side one.
+ *
+ * <p><b>Review fix (round 1): a stale capture must not outlive the eligibility it was captured under.</b>
+ * If a tagged Zombie/Skeleton filler's death is CANCELLED at cell A (capturing (faction, A)), then that same
+ * entity becomes persistence-required (named/leashed) -- no longer eligible, so {@code
+ * FillerFactionSimulation.isFiller} now excludes it -- and later actually dies for real at cell B, the LATER
+ * {@code LivingDeathEvent} finds it ineligible and (before this fix) simply skipped calling {@link #capture}
+ * again, leaving the STALE (faction, A) entry from the cancelled attempt to be wrongly consumed and applied
+ * by the real death's confirmed removal. Every entity-type {@code onLivingDeath} listener now calls
+ * {@link #take} UNCONDITIONALLY as its first action -- discarding whatever was pending, win or lose -- and
+ * only calls {@link #capture} afterward if THIS attempt is itself currently eligible. So the real death's own
+ * {@code LivingDeathEvent} (which fires before its confirmed removal, same as every death) always clears the
+ * stale A-entry first; since the entity is ineligible at that point, nothing new is captured, and the
+ * confirmed removal that follows finds nothing pending to apply.
+ *
+ * <p>Net effect: a cancelled death never reaches confirmed removal at all, so its pending entry is either
+ * superseded by a later capture for the same UUID, or discarded (un-applied) the next time that entity's own
+ * {@code LivingDeathEvent} fires -- eligible or not -- or by any other server-side leave event; a genuine,
+ * still-eligible death is consumed -- removed from the map -- exactly once, so neither a duplicate
+ * leave-level callback nor a lingering stale entry can ever apply the decrement twice, or at the wrong cell.
  */
 public final class PopulationDeathDecrement {
     private PopulationDeathDecrement() { }
@@ -71,18 +97,34 @@ public final class PopulationDeathDecrement {
         FillagerReconciliation.adjustLocalTarget(pending.cell(), -decrement, read, write);
     }
 
+    /**
+     * The pure gate behind {@link #onEntityLeaveLevel}: {@code isServerLevel} must be checked and found true
+     * BEFORE {@link #take} is ever called -- a {@code false} here must short-circuit without touching
+     * {@code PENDING} at all, which is exactly what makes a client-side leave event (same UUID, integrated
+     * JVM) harmless. When server-side, {@link #take} always runs (clearing a stale/non-{@code KILLED}
+     * entry same as ever), but this returns empty unless the removal is also a confirmed {@code KILLED}.
+     */
+    static Optional<Pending> consumeIfConfirmedServerKill(boolean isServerLevel, UUID id, String removalReasonName) {
+        if (!isServerLevel) {
+            return Optional.empty();
+        }
+        Optional<Pending> pending = take(id);
+        if (pending.isEmpty() || !KingDeathRetirement.isConfirmedDeathRemoval(removalReasonName)) {
+            return Optional.empty();
+        }
+        return pending;
+    }
+
     @SubscribeEvent
     public static void onEntityLeaveLevel(EntityLeaveLevelEvent event) {
         Entity entity = event.getEntity();
-        Optional<Pending> pending = take(entity.getUUID());
+        boolean isServerLevel = event.getLevel() instanceof ServerLevel;
+        String removalReason = entity.getRemovalReason() == null ? null : entity.getRemovalReason().name();
+        Optional<Pending> pending = consumeIfConfirmedServerKill(isServerLevel, entity.getUUID(), removalReason);
         if (pending.isEmpty()) {
             return;
         }
-        String removalReason = entity.getRemovalReason() == null ? null : entity.getRemovalReason().name();
-        if (!KingDeathRetirement.isConfirmedDeathRemoval(removalReason) || !(event.getLevel() instanceof ServerLevel level)) {
-            return;
-        }
-        LevelField field = PopulationSimulation.field(level, pending.get().faction());
+        LevelField field = PopulationSimulation.field((ServerLevel) event.getLevel(), pending.get().faction());
         apply(pending.get(), DynamicPopulationConfig.get().populationDeathTargetDecrement(), field::get, field::set);
     }
 

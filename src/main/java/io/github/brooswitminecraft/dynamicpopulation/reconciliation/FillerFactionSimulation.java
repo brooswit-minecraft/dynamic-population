@@ -83,6 +83,13 @@ public final class FillerFactionSimulation {
         if (!(event.getEntity() instanceof Mob mob) || !(mob.level() instanceof ServerLevel level)) {
             return;
         }
+        // Review fix (round 1): discard any stale pending capture from an earlier, CANCELLED death attempt
+        // BEFORE deciding whether THIS attempt is itself eligible. Without this, a filler whose cancelled
+        // death at cell A left a pending capture, then later became persistence-required (no longer
+        // tagged-and-eligible per isFiller) and then genuinely died at cell B, would skip re-capturing here
+        // (ineligible) while the stale A-entry survived to be wrongly applied by the real death's confirmed
+        // removal -- see PopulationDeathDecrement's own class doc for the full sequence.
+        PopulationDeathDecrement.take(mob.getUUID());
         for (Spec spec : SPECS) {
             if (isFiller(mob, spec)) {
                 LevelField field = PopulationSimulation.field(level, spec.faction());

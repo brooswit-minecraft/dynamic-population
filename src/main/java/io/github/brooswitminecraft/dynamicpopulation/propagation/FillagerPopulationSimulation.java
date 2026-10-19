@@ -133,6 +133,11 @@ public final class FillagerPopulationSimulation {
         if (!(event.getEntity() instanceof Fillager fillager) || !(fillager.level() instanceof ServerLevel level)) {
             return;
         }
+        // Review fix (round 1): discard any stale pending capture from an earlier, cancelled death attempt
+        // first -- see PopulationDeathDecrement's own class doc. A Fillager's eligibility never itself
+        // flips (unlike a tagged filler's), but every onLivingDeath listener does this uniformly so no
+        // future change here can silently reopen that staleness window.
+        PopulationDeathDecrement.take(fillager.getUUID());
         LevelField field = PopulationSimulation.field(level);
         CellKey localCell = field.cellAt(fillager.blockPosition());
         PopulationDeathDecrement.capture(fillager.getUUID(), Faction.VILLAGER, localCell);
