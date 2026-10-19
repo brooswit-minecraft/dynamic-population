@@ -222,14 +222,19 @@ def boot(root):
         # population_death_target_decrement (default 25) landing at 975 from either a no-op (1000) or a
         # wrong-amount decrement.
         def read_entity_position(tag):
+            # The raw server log line has its OWN leading brackets (timestamp, thread, logger name) before
+            # "... has the following entity data: [0.5d, -60.0d, 0.5d]" -- a naive first-'['-to-first-']'
+            # extraction grabs the timestamp instead of the Pos array, so this anchors specifically on the
+            # "entity data:" marker vanilla's own /data get feedback always includes right before the array.
+            pattern = re.compile(r'entity data:\s*\[(.*?)\]')
             process.stdin.write(f'data get entity @e[tag={tag},limit=1] Pos\n')
             process.stdin.flush()
             for line in drain_for(2):
-                if 'entity data:' not in line or '[' not in line:
+                match = pattern.search(line)
+                if not match:
                     continue
-                bracket = line.split('[', 1)[1].split(']', 1)[0]
                 try:
-                    return [float(part.strip().rstrip('d')) for part in bracket.split(',')]
+                    return [float(part.strip().rstrip('d')) for part in match.group(1).split(',')]
                 except ValueError:
                     continue
             return None
